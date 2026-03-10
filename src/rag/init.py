@@ -1,1 +1,112 @@
 from __future__ import annotations
+
+import json
+import shutil
+import sys
+import urllib.request
+from pathlib import Path
+
+
+def detect_llm_cli() -> str | None:
+    """Auto-detect available LLM CLI tool."""
+    for tool in ["claude", "kiro-cli", "codex"]:
+        if shutil.which(tool):
+            return tool
+    return None
+
+
+def check_docker_available() -> bool:
+    """Check if Docker CLI is on PATH."""
+    return shutil.which("docker") is not None
+
+
+def check_qdrant_running(url: str = "http://localhost:6333") -> bool:
+    """Check if Qdrant is reachable."""
+    try:
+        req = urllib.request.urlopen(f"{url}/healthz", timeout=5)
+        return bool(req.status == 200)
+    except Exception:
+        return False
+
+
+def create_config(
+    folders: list[str],
+    llm_command: str | None = None,
+    config_path: Path | None = None,
+) -> Path:
+    """Create config.toml with the given settings."""
+    if config_path is None:
+        config_path = Path("~/.config/dropbox-rag/config.toml").expanduser()
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lines = ["[folders]"]
+    # Format paths as TOML array
+    formatted = [f'"{p}"' for p in folders]
+    lines.append(f"paths = [{', '.join(formatted)}]")
+    lines.append("")
+
+    if llm_command:
+        lines.append("[summarization]")
+        lines.append("enabled = true")
+        lines.append(f'command = "{llm_command}"')
+        lines.append("")
+
+    config_path.write_text("\n".join(lines) + "\n")
+    return config_path
+
+
+def generate_mcp_config(transport: str = "stdio") -> dict[str, object]:
+    """Generate MCP server config JSON for Claude Desktop / Claude Code."""
+    python_path = sys.executable
+    if transport == "stdio":
+        return {
+            "mcpServers": {
+                "dropbox-rag": {
+                    "command": python_path,
+                    "args": ["-m", "rag.cli", "serve"],
+                }
+            }
+        }
+    return {
+        "mcpServers": {
+            "dropbox-rag": {
+                "command": python_path,
+                "args": ["-m", "rag.cli", "serve", "--http"],
+            }
+        }
+    }
+
+
+def install_mcp_config(target: str) -> bool:
+    """Install MCP config for the given target (claude-desktop or claude-code).
+
+    Returns True on success.
+    """
+    config = generate_mcp_config()
+
+    if target == "claude-desktop":
+        config_path = Path("~/Library/Application Support/Claude/claude_desktop_config.json")
+    elif target == "claude-code":
+        config_path = Path("~/.claude/settings.json")
+    else:
+        return False
+
+    config_path = config_path.expanduser()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing: dict[str, object] = {}
+    if config_path.is_file():
+        existing = json.loads(config_path.read_text())
+
+    if "mcpServers" not in existing:
+        existing["mcpServers"] = {}
+
+    servers = existing["mcpServers"]
+    if isinstance(servers, dict):
+        mcp_servers = config.get("mcpServers", {})
+        if isinstance(mcp_servers, dict):
+            servers.update(mcp_servers)
+
+    config_path.write_text(json.dumps(existing, indent=2) + "\n")
+    return True
