@@ -40,6 +40,10 @@ plugins = ["pydantic.mypy"]
 warn_return_any = true
 warn_unused_configs = true
 
+[[tool.mypy.overrides]]
+module = ["onnxruntime.*", "transformers.*"]
+ignore_missing_imports = true
+
 [tool.ruff]
 target-version = "py311"
 line-length = 99
