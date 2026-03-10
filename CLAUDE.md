@@ -4,12 +4,12 @@
 
 Local RAG system that indexes documents from configured filesystem folders, builds a hybrid search index (dense vectors + keyword), and exposes retrieval via MCP to local LLM tools (Claude Desktop, Claude Code). Single Python process + Qdrant Docker container. No cloud infrastructure required.
 
-Full spec: `plan/local/local-rag-spec.md`
-Cloud variant spec (future): `plan/cloud/dropbox-rag-final-spec.md`
+## Plans
 
-## Status
-
-Pre-implementation. Building the local version first (Phase 1).
+- Spec: `plan/local/local-rag-spec.md`
+- Agent team plan: `plan/local/agent-team-plan.md`
+- Spec review: `plan/local/spec-review.md`
+- Cloud variant (future): `plan/cloud/dropbox-rag-final-spec.md`
 
 ## Architecture
 
@@ -32,22 +32,30 @@ Single Python process handles: filesystem watching (watchdog) → Docling parsin
 - **ruff** for linting and formatting (ANN, TC rule sets enabled). Note: `TCH` was renamed to `TC` in ruff v0.8.0.
 - **Async/sync**: indexing pipeline is sync. MCP handlers are async. CPU-bound ops via `asyncio.to_thread()`. Qdrant queries via `AsyncQdrantClient`.
 
+- **`from __future__ import annotations`** in every module. Use `model_rebuild()` for cross-module Pydantic forward refs.
+
 See `plan/local/local-rag-spec.md` §2.1 for full typing rules and examples.
 
 ## Project Structure
 
 ```
 src/rag/
-  cli.py              # Entry points: rag index, rag serve, rag watch, rag status
-  config.py           # TOML config loader (Pydantic)
-  sync/               # Filesystem watcher + scanner
-  pipeline/           # classify → parse → normalize → dedup → chunk → embed → summarize → index
-    parser/            # Docling wrapper (PDF/DOCX) + text fallback
+  types.py             # All Pydantic models, StrEnums, Literals, type aliases
+  protocols.py         # All Protocol classes (Embedder, Summarizer, MetadataDB, VectorStore, Reranker, Parser)
+  results.py           # Discriminated union Result types (ParseResult, SummaryResult, etc.)
+  cli.py               # Entry points: rag init, rag index, rag serve, rag watch, rag status, rag search
+  config.py            # TOML config loader (AppConfig Pydantic model)
+  init.py              # Interactive setup wizard (rag init)
+  sync/                # Filesystem watcher + scanner
+  pipeline/            # classify → parse → normalize → dedup → chunk → embed → summarize → index
+    parser/            # Docling wrapper (PDF/DOCX, subprocess) + text fallback (TXT/MD)
   retrieval/           # Multi-stage search: dense + keyword + RRF + reranker + citations
-  mcp/                 # MCP server + tool definitions (4 tools)
-  db/                  # SQLite connection, models, migrations
+  mcp/                 # MCP server (async) + tool definitions (4 tools)
+  db/                  # SQLite connection + Qdrant client, models, migrations
 migrations/            # SQL schema files
-tests/                 # Unit + integration tests with fixtures
+tests/                 # Unit tests per module
+tests/e2e/             # End-to-end tests (real Qdrant, real models, real MCP server)
+tests/fixtures/        # Real sample documents with known searchable content
 ```
 
 ## Key Commands
@@ -67,7 +75,20 @@ rag mcp-config --print # Print MCP config JSON snippet
 
 - Target chunk size: 512 tokens (tiktoken cl100k_base), 64-token overlap
 - Embedding dimensions: 1024 (BGE-M3)
-- Qdrant: single collection "documents", cosine distance, record_type payload field
+- Qdrant: single collection "documents", cosine distance, record_type payload field, all search via `query_points()` API (not removed `search()`)
+- Qdrant indexing: deterministic UUID5 point IDs for overwrite semantics (no delete+upsert)
+- UUID5 namespace: `NAMESPACE_RAG` constant, format `f"{doc_id}:{section_order}:{chunk_order}"`
 - UUIDs stored as TEXT in SQLite
 - All timestamps ISO 8601
+- SQLite: WAL mode, busy_timeout=30000
 - Config file: TOML at `~/.config/dropbox-rag/config.toml`
+- Docling parsing runs in child subprocess (multiprocessing) for memory isolation
+- MCP stdio servers: never write to stdout (corrupts JSON-RPC); use stderr for logging
+
+## Testing
+
+- `make lint` — ruff check + mypy strict
+- `make test` — unit tests (fast, no Docker)
+- `make test-e2e` — end-to-end with real Qdrant Docker, real BGE-M3 model, real `claude` CLI for summarization, real MCP server subprocess
+- E2e tests use fixture documents with known query-answer pairs — asserts on specific content, not just "something returned"
+- `make test-e2e` passing = system works. No ambiguity.
