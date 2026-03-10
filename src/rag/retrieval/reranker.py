@@ -43,7 +43,15 @@ class OnnxReranker:
             onnx_path,
             providers=["CPUExecutionProvider"],
         )
-        self._tokenizer = AutoTokenizer.from_pretrained(model_path)  # type: ignore[no-untyped-call]
+        # Suppress spurious "incorrect regex pattern" warning from transformers
+        # (the fix_mistral_regex flag crashes on this tokenizer type)
+        _tf_logger = logging.getLogger("transformers.tokenization_utils_base")
+        prev_level = _tf_logger.level
+        _tf_logger.setLevel(logging.ERROR)
+        try:
+            self._tokenizer = AutoTokenizer.from_pretrained(model_path)  # type: ignore[no-untyped-call]
+        finally:
+            _tf_logger.setLevel(prev_level)
         logger.info("Loaded reranker model from %s", model_path)
 
     def rerank(self, query: str, candidates: list[SearchHit], top_k: int) -> list[SearchHit]:
