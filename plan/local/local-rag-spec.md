@@ -1,8 +1,8 @@
-# Local Dropbox RAG System — Build Specification
+# Local RAG System — Build Specification
 
 ## 1. Document Purpose
 
-This is the build specification for a local, laptop-hosted variant of the Dropbox RAG system. It indexes documents from configured local folders, builds a searchable vector index with multi-level summaries, and exposes retrieval to local LLM tools (Claude Desktop, Claude Code, etc.) via a local MCP server. No cloud infrastructure required — everything runs on the developer's machine.
+This is the build specification for a local, laptop-hosted variant of the RAG system. It indexes documents from configured local folders, builds a searchable vector index with multi-level summaries, and exposes retrieval to local LLM tools (Claude Desktop, Claude Code, etc.) via a local MCP server. No cloud infrastructure required — everything runs on the developer's machine.
 
 This spec is the local counterpart to `plan/cloud/local-rag-final-spec.md`. The core pipeline logic (classify → parse → normalize → dedup → chunk → embed → index) and retrieval engine (hybrid search + RRF + reranker) are shared designs. The differences are in infrastructure, deployment, and model choices.
 
@@ -23,7 +23,7 @@ This spec is the local counterpart to `plan/cloud/local-rag-final-spec.md`. The 
 | Score fusion | **Reciprocal Rank Fusion (RRF)** with k=60 | Same as cloud |
 | Reranker | **bge-reranker-v2-m3** via ONNX Runtime on CPU | Same as cloud — ~200-350ms for 30 candidates on CPU |
 | MCP transport | **stdio** (primary) for Claude Desktop; **Streamable HTTP** as alternative | stdio is the standard local MCP transport; no TLS/auth needed. HTTP uses Streamable HTTP transport (`mcp>=1.25,<2`). |
-| File sync | **watchdog** filesystem watcher + content hash dedup | Replaces Dropbox webhook/cursor; watches configured folder list for changes |
+| File sync | **watchdog** filesystem watcher + content hash dedup | Replaces cloud webhook/cursor; watches configured folder list for changes |
 | Deployment | **Single Python process** + Qdrant Docker container | No Docker Compose orchestra needed for the Python services; simple `pip install` + `docker run` |
 | Answer synthesis | **None — RAG returns evidence only** | The calling LLM (Claude Desktop, etc.) synthesizes answers from returned citations |
 | Language | **Python 3.11+ with strict typing** | ML ecosystem (Docling, sentence-transformers, onnxruntime) is Python-only; strict typing via Pydantic v2 + mypy strict mode + dataclasses enables reliable AI-assisted development |
@@ -325,7 +325,7 @@ select = ["E", "F", "W", "I", "N", "ANN", "B", "A", "TC", "UP", "RUF"]
 
 ```
 Configured local folders
-  /Users/you/Dropbox/Work
+  /Users/you/Documents/Work
   /Users/you/Documents/Reports
   ~/projects/notes
        │
@@ -384,7 +384,7 @@ Single TOML config file at `~/.config/local-rag/config.toml` (or project-local `
 [folders]
 # List of absolute paths to watch and index
 paths = [
-    "/Users/you/Dropbox/Work",
+    "/Users/you/Documents/Work",
     "/Users/you/Documents/Reports",
     "~/projects/notes"
 ]
@@ -641,9 +641,9 @@ Full-text index on `text` field (word tokenizer, min 3 / max 20 chars, lowercase
   "section_id": "uuid | null",
   "chunk_id": "uuid | null",
   "title": "Q3 Operational Review",
-  "file_path": "/Users/you/Dropbox/Work/Reports/Q3-review.pdf",
-  "folder_path": "/Users/you/Dropbox/Work/Reports",
-  "folder_ancestors": ["/", "/Users/you/Dropbox/Work", "/Users/you/Dropbox/Work/Reports"],
+  "file_path": "/Users/you/Documents/Work/Reports/Q3-review.pdf",
+  "folder_path": "/Users/you/Documents/Work/Reports",
+  "folder_ancestors": ["/", "/Users/you/Documents/Work", "/Users/you/Documents/Work/Reports"],
   "file_type": "pdf",
   "modified_at": "2025-03-01T10:30:00Z",
   "page_start": 12,
@@ -664,7 +664,7 @@ Full-text index on `text` field (word tokenizer, min 3 / max 20 chars, lowercase
 
 ### 6.1 File Discovery & Sync
 
-Instead of Dropbox API webhooks and cursor-based delta sync, the local system uses filesystem watching.
+Instead of cloud API webhooks and cursor-based delta sync, the local system uses filesystem watching.
 
 **Initial scan:** On first run, walk all configured folders, hash every matching file, record in sync_state, queue all for processing.
 
@@ -794,7 +794,7 @@ Same as cloud:
   "text": "Merged chunk text with context...",
   "citation": {
     "title": "Q3 Operational Review",
-    "path": "/Users/you/Dropbox/Work/Reports/Q3-review.pdf",
+    "path": "/Users/you/Documents/Work/Reports/Q3-review.pdf",
     "section": "Revenue Analysis",
     "pages": "12-14",
     "modified": "2025-03-01",
@@ -918,11 +918,11 @@ That's it. `rag init` handles everything: config file creation, Qdrant Docker co
 ```
 $ rag init
 
-Welcome to Dropbox RAG! Let's get you set up.
+Welcome to Local RAG! Let's get you set up.
 
 Folders to index
   Add a folder path (tab completion, ~ expansion):
-  > ~/Dropbox/Work
+  > ~/Documents/Work
   > ~/Documents/Reports
   > (empty to finish)
 
@@ -1090,7 +1090,7 @@ rag mcp-config --install claude-code      # Install MCP entry into Claude Code c
 ### `rag status` Output
 
 ```
-Dropbox RAG Status
+Local RAG Status
 ──────────────────────────────
 Documents:  487 found · 472 indexed · 12 pending · 3 errors
 Chunks:     9,841 indexed (1,024-dim BGE-M3)
@@ -1099,12 +1099,12 @@ Watcher:    running (3 folders)
 LLM CLI:    claude (available)
 
 Folders:
-  ~/Dropbox/Work          312 docs  ✓
+  ~/Documents/Work          312 docs  ✓
   ~/Documents/Reports      98 docs  ✓
   ~/projects/notes          77 docs  ✓
 
 Recent errors:
-  ~/Dropbox/Work/corrupt.pdf    parse failed (retry 2/3)
+  ~/Documents/Work/corrupt.pdf    parse failed (retry 2/3)
   ~/Documents/Reports/old.docx  parse failed (retry 1/3)
   ~/projects/notes/broken.md    normalize failed (retry 3/3 → poisoned)
 ```
@@ -1208,7 +1208,7 @@ Recent errors:
 | Metadata DB | PostgreSQL 16 | SQLite |
 | Embedding model | Bedrock Titan Embed v2 (1024-dim) | BGE-M3 (1024-dim) |
 | Summarization | Bedrock Claude 3.5 Haiku | LLM CLI tool (claude, kiro, etc.) |
-| File sync | Dropbox webhooks + cursor API | watchdog filesystem watcher |
+| File sync | Cloud webhooks + cursor API | watchdog filesystem watcher |
 | IPC | PostgreSQL LISTEN/NOTIFY | Single process (no IPC needed) |
 | Deployment | Docker Compose (6 services) | pip install + docker run qdrant |
 | MCP transport | Remote SSE over HTTPS + bearer token | stdio (local) or Streamable HTTP |
@@ -1228,7 +1228,7 @@ The pipeline logic (classify, parse, normalize, dedup, chunk) and retrieval engi
 - **Embedding backend:** Bedrock API call vs local sentence-transformers
 - **Summarization backend:** Bedrock API call vs CLI subprocess
 - **Database backend:** asyncpg (Postgres) vs sqlite3
-- **Sync backend:** Dropbox API vs filesystem watcher
+- **Sync backend:** Cloud API vs filesystem watcher
 - **MCP transport:** Remote SSE vs stdio
 
 If both variants are maintained, these backends should be abstracted behind interfaces so the core pipeline and retrieval code is shared. The `embedder.py`, `summarizer.py`, `db.py`, and `sync/` modules would have pluggable backends; everything else is identical.

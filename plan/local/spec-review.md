@@ -342,7 +342,7 @@ Total: 10-14 working days (2-3 weeks).
 ### 4.3 Dedup should be in Phase 1
 
 **Spec ref:** SS12 Phase 3 (3.1), SS6.5
-**Detail:** Without dedup, the same content at two file paths (e.g., `~/Downloads/report.pdf` and `~/Dropbox/Work/report.pdf`) produces duplicate vectors and duplicate search results from day one. The atomic per-doc swap only handles re-indexing the same path.
+**Detail:** Without dedup, the same content at two file paths (e.g., `~/Downloads/report.pdf` and `~/Shared/Work/report.pdf`) produces duplicate vectors and duplicate search results from day one. The atomic per-doc swap only handles re-indexing the same path.
 **Severity:** Should-fix
 **Fix:** Move exact-hash dedup (SHA-256 on raw bytes) to Phase 1 between normalizer (1.6) and chunker (1.7). It's simple: check `document_hashes` for `raw_hash`, if match, link to canonical, skip. Normalized-hash dedup stays in Phase 3.
 

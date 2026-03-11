@@ -207,7 +207,7 @@ Full config with all defaults shown:
 
 ```toml
 [folders]
-paths = ["~/Documents", "~/Dropbox"]
+paths = ["~/Documents", "~/Work"]
 extensions = ["pdf", "docx", "txt", "md"]
 ignore = ["**/node_modules", "**/.git", "**/venv", "**/__pycache__"]
 

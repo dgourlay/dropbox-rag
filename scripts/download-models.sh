@@ -19,10 +19,10 @@ else
     PIP="pip3"
 fi
 
-MODEL_DIR="${HOME}/.cache/dropbox-rag/models/bge-reranker-v2-m3"
+MODEL_DIR="${HOME}/.cache/local-rag/models/bge-reranker-v2-m3"
 MODEL_FILE="${MODEL_DIR}/model.onnx"
 
-echo "=== dropbox-rag: Reranker Model Export ==="
+echo "=== local-rag: Reranker Model Export ==="
 echo ""
 
 if [ -f "${MODEL_FILE}" ]; then
