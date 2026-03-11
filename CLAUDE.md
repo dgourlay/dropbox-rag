@@ -13,7 +13,7 @@ Local RAG system that indexes documents from configured filesystem folders, buil
 
 ## Architecture
 
-Single Python process handles: filesystem watching (watchdog) → Docling parsing (in subprocess for memory isolation) → normalization → dedup → chunking → embedding (local BGE-M3, 1024-dim) → Qdrant indexing. Summarization shells out to a user-configured LLM CLI tool (claude, kiro-cli, etc.). MCP server runs via stdio for Claude Desktop or Streamable HTTP. MCP handlers are async; CPU-bound ops dispatched via asyncio.to_thread(). Retrieval pipeline: hybrid dense+keyword search via query_points() → RRF fusion → ONNX cross-encoder reranker → cited evidence returned to calling LLM.
+Single Python process handles: filesystem watching (watchdog) → Docling parsing (in subprocess for memory isolation) → normalization → dedup → chunking → embedding (local BGE-M3, 1024-dim) → summarization (LLM CLI) → Qdrant indexing. Summarization shells out to a user-configured LLM CLI tool (claude, kiro-cli, etc.) and stores document_summary and section_summary vectors in Qdrant. MCP server runs via stdio for Claude Desktop or Streamable HTTP. MCP handlers are async; CPU-bound ops dispatched via asyncio.to_thread(). Retrieval pipeline: 3-lane prefetch (document_summary top 20, section_summary top 20, chunks top 30) → RRF fusion with layer weighting (broad/specific query classification) → recency boost (90-day half-life, max 30% influence) → ONNX cross-encoder reranker → cited evidence returned to calling LLM.
 
 ## Tech Stack
 
@@ -49,8 +49,9 @@ src/rag/
   sync/                # Filesystem watcher + scanner
   pipeline/            # classify → parse → normalize → dedup → chunk → embed → summarize → index
     parser/            # Docling wrapper (PDF/DOCX, subprocess) + text fallback (TXT/MD)
-  retrieval/           # Multi-stage search: dense + keyword + RRF + reranker + citations
-  mcp/                 # MCP server (async) + tool definitions (4 tools)
+    summarizer.py      # CliSummarizer: LLM CLI for doc/section summaries (step 12)
+  retrieval/           # 3-lane prefetch + RRF fusion + layer weighting + recency boost + reranker + citations
+  mcp/                 # MCP server (async) + tool definitions (5 tools)
   db/                  # SQLite connection + Qdrant client, models, migrations
 migrations/            # SQL schema files
 tests/                 # Unit tests per module
@@ -61,14 +62,18 @@ tests/fixtures/        # Real sample documents with known searchable content
 ## Key Commands
 
 ```bash
-rag init               # Interactive setup wizard (folders, LLM CLI, Qdrant, MCP)
-rag index              # Full scan + process all documents
-rag serve              # Start MCP server (stdio)
-rag watch              # Filesystem watcher (auto-index on changes)
-rag status             # Dashboard: docs/chunks/errors, per-folder breakdown
-rag doctor             # Health check: Qdrant, OCR, models, folders
-rag search "query"     # CLI search for testing
-rag mcp-config --print # Print MCP config JSON snippet
+rag init                          # Interactive setup wizard (folders, LLM CLI, Qdrant, MCP)
+rag index                         # Full scan + process all documents
+rag index --reindex               # Purge all index data, re-process everything (prompts confirmation)
+rag index --reindex /path/to/file # Clear + re-process a single file
+rag serve                         # Start MCP server (stdio)
+rag watch                         # Filesystem watcher (auto-index on changes)
+rag status                        # Dashboard: docs/chunks/errors, MCP health, liveness checks
+rag doctor                        # Health check: Qdrant, OCR, models, folders
+rag search "query"                # CLI search for testing
+rag search "query" --debug        # Search with per-lane counts, weights, timing
+rag search "query" --top-k 5      # Limit number of results
+rag mcp-config --print            # Print MCP config JSON snippet
 ```
 
 ## Conventions
@@ -84,6 +89,10 @@ rag mcp-config --print # Print MCP config JSON snippet
 - Config file: TOML at `~/.config/dropbox-rag/config.toml`
 - Docling parsing runs in child subprocess (multiprocessing) for memory isolation
 - MCP stdio servers: never write to stdout (corrupts JSON-RPC); use stderr for logging
+- SQLite: `check_same_thread=False` for async MCP handler access
+- Retrieval: 3-lane prefetch by record_type, layer weighting by query classification, recency boost (90-day half-life)
+- MCP tools: 5 tools (search_documents, quick_search, get_document_context, list_recent_documents, get_sync_status)
+- search_documents `format` parameter: "text" (default, LLM-friendly) or "json" (raw structured data)
 
 ## Testing
 

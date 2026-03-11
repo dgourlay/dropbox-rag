@@ -150,7 +150,8 @@ Once connected, your LLM has access to these tools:
 
 | Tool | Description |
 |---|---|
-| `search_documents` | Hybrid search with reranking. Accepts `query`, optional `folder_filter`, `date_filter`, `top_k`. Returns cited evidence passages with scores. |
+| `search_documents` | Hybrid search with reranking. Accepts `query`, optional `folder_filter`, `date_filter`, `top_k`, `format` ("text" or "json"). Returns cited evidence passages with scores. |
+| `quick_search` | Lightweight document-level scan returning document summaries. Faster than `search_documents` for broad queries. |
 | `get_document_context` | Get document overview (summary + sections) by `doc_id`, or a chunk with surrounding context by `chunk_id`. |
 | `list_recent_documents` | List recently indexed documents, optionally filtered by folder. |
 | `get_sync_status` | Check indexing health: total files, indexed count, errors, per-folder breakdown. |
@@ -174,11 +175,13 @@ to the correct venv.
 |---|---|
 | `rag init` | Interactive setup wizard -- configures folders, LLM CLI, Qdrant |
 | `rag index` | Full scan and process all documents in configured folders |
+| `rag index --reindex` | Purge all index data and re-process everything from scratch |
+| `rag index --reindex FILE` | Clear index state for a single file and re-process it |
 | `rag serve` | Start the MCP server (stdio transport by default) |
 | `rag watch` | Filesystem watcher -- auto-indexes on document changes |
-| `rag status` | Dashboard showing document/chunk/error counts per folder |
+| `rag status` | Dashboard showing document/chunk/error counts, MCP health, liveness |
 | `rag doctor` | Health check -- verifies Qdrant, models, folders |
-| `rag search "query"` | CLI search for testing (`--debug` for timing info) |
+| `rag search "query"` | CLI search for testing (`--debug` for lane/weight details, `--top-k N`) |
 | `rag mcp-config` | Print or install MCP config (`--print`, `--install`) |
 
 
@@ -249,9 +252,11 @@ batch_window_seconds = 10
 
 Single Python process handles: filesystem watching (watchdog) -> Docling
 parsing (in subprocess for memory isolation) -> normalization -> dedup ->
-chunking (512 tokens, 64 overlap) -> embedding (BGE-M3, 1024-dim) -> Qdrant
-indexing. Retrieval: hybrid dense + keyword search -> RRF fusion -> ONNX
-cross-encoder reranker -> cited evidence returned to the calling LLM.
+chunking (512 tokens, 64 overlap) -> embedding (BGE-M3, 1024-dim) ->
+summarization (LLM CLI) -> Qdrant indexing. Retrieval: 3-lane prefetch
+(document summaries, section summaries, chunks) -> RRF fusion with layer
+weighting -> recency boost -> ONNX cross-encoder reranker -> cited evidence
+returned to the calling LLM.
 
 ```
 src/rag/
@@ -262,10 +267,10 @@ src/rag/
   protocols.py         # Protocol classes (Embedder, Summarizer, etc.)
   results.py           # Discriminated union Result types
   sync/                # Filesystem scanner + watcher
-  pipeline/            # classify -> parse -> normalize -> dedup -> chunk -> embed -> index
+  pipeline/            # classify -> parse -> normalize -> dedup -> chunk -> embed -> summarize -> index
     parser/            # Docling (PDF/DOCX) + text fallback (TXT/MD)
-  retrieval/           # Hybrid search + RRF + reranker + citations
-  mcp/                 # MCP server (stdio + HTTP) + 4 tool definitions
+  retrieval/           # 3-lane prefetch + RRF + layer weighting + reranker + citations
+  mcp/                 # MCP server (stdio + HTTP) + 5 tool definitions
   db/                  # SQLite + Qdrant clients
 migrations/            # SQL schema
 tests/                 # Unit + e2e tests

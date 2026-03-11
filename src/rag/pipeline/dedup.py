@@ -27,7 +27,8 @@ class DedupChecker:
 
         if normalized_hash:
             cursor = self._conn.execute(
-                "SELECT canonical_doc_id FROM document_hashes WHERE normalized_hash = ?",
+                "SELECT canonical_doc_id FROM document_hashes"
+                " WHERE normalized_hash = ?",
                 (normalized_hash,),
             )
             row = cursor.fetchone()
@@ -35,6 +36,11 @@ class DedupChecker:
                 return str(row[0])
 
         return None
+
+    def clear_all(self) -> None:
+        """Remove all registered hashes, forcing full re-processing."""
+        self._conn.execute("DELETE FROM document_hashes")
+        self._conn.commit()
 
     def register_hash(
         self,

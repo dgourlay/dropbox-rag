@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from rag.db.models import SqliteMetadataDB
     from rag.pipeline.runner import PipelineRunner
     from rag.retrieval.engine import RetrievalEngine
+    from rag.types import FileEvent
 
 
 def _init_components(
@@ -195,40 +196,27 @@ def init(add_folder: str | None, set_llm: str | None) -> None:
 @main.command()
 @click.option("--folder", type=click.Path(exists=True), help="Index only this folder.")
 @click.option("--file", "single_file", type=click.Path(exists=True), help="Index a single file.")
-def index(folder: str | None, single_file: str | None) -> None:
+@click.option(
+    "--reindex",
+    default=None,
+    is_flag=False,
+    flag_value="all",
+    help="Re-process files. Use 'all' or a file path.",
+)
+def index(folder: str | None, single_file: str | None, reindex: str | None) -> None:
     """Full scan and process all documents."""
     from rag.config import load_config
     from rag.sync.scanner import scan_folders
 
     config = load_config()
 
+    if reindex is not None:
+        _handle_reindex(reindex, config, folder)
+        return
+
     if single_file is not None:
-        # Index a single file
-        from datetime import UTC, datetime
-
-        from rag.sync.scanner import classify_file_type, compute_file_hash
-        from rag.types import FileEvent
-
-        path = Path(single_file).resolve()
-        ft = classify_file_type(path)
-        if ft is None:
-            click.echo(f"Unsupported file type: {path.suffix}", err=True)
-            raise SystemExit(1)
-
-        content_hash = compute_file_hash(path)
-        stat = path.stat()
-        modified_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
-        events = [
-            FileEvent(
-                file_path=str(path),
-                content_hash=content_hash,
-                file_type=ft,
-                event_type="created",
-                modified_at=modified_at,
-            )
-        ]
+        events = _single_file_events(single_file)
     elif folder is not None:
-        # Override config to scan only one folder
         from rag.config import FoldersConfig
 
         folder_config = FoldersConfig(
@@ -240,6 +228,118 @@ def index(folder: str | None, single_file: str | None) -> None:
     else:
         events = scan_folders(config.folders)
 
+    _run_index(config, events)
+
+
+def _single_file_events(file_path: str) -> list[FileEvent]:
+    from datetime import UTC, datetime
+
+    from rag.sync.scanner import classify_file_type, compute_file_hash
+    from rag.types import FileEvent
+
+    path = Path(file_path).resolve()
+    ft = classify_file_type(path)
+    if ft is None:
+        click.echo(f"Unsupported file type: {path.suffix}", err=True)
+        raise SystemExit(1)
+
+    content_hash = compute_file_hash(path)
+    stat = path.stat()
+    modified_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+    return [
+        FileEvent(
+            file_path=str(path),
+            content_hash=content_hash,
+            file_type=ft,
+            event_type="created",
+            modified_at=modified_at,
+        )
+    ]
+
+
+def _handle_reindex(target: str, config: AppConfig, folder: str | None) -> None:
+    from rag.db.connection import get_connection
+    from rag.db.migrations import run_migrations
+    from rag.sync.scanner import scan_folders
+
+    conn = get_connection(config.database.path)
+    run_migrations(conn)
+
+    if target == "all":
+        doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+        if doc_count == 0:
+            click.echo("Nothing to re-index — no documents in the index.")
+            return
+        click.echo(
+            f"This will purge and re-process all {doc_count} documents."
+        )
+        if not click.confirm("Are you sure?"):
+            click.echo("Aborted.")
+            return
+        conn.execute("DELETE FROM document_hashes")
+        conn.execute("DELETE FROM chunks")
+        conn.execute("DELETE FROM sections")
+        conn.execute("DELETE FROM documents")
+        conn.execute("DELETE FROM sync_state")
+        conn.commit()
+        click.echo("Cleared index — re-processing all files.")
+
+        if folder is not None:
+            from rag.config import FoldersConfig
+
+            folder_config = FoldersConfig(
+                paths=[Path(folder)],
+                extensions=config.folders.extensions,
+                ignore=config.folders.ignore,
+            )
+            events = scan_folders(folder_config)
+        else:
+            events = scan_folders(config.folders)
+    else:
+        # Reindex a specific file
+        file_path = str(Path(target).resolve())
+        row = conn.execute(
+            "SELECT file_path FROM sync_state WHERE file_path = ?",
+            (file_path,),
+        ).fetchone()
+        if row is None:
+            click.echo(
+                f"Error: {file_path} is not in the index.", err=True
+            )
+            raise SystemExit(1)
+        conn.execute(
+            "DELETE FROM document_hashes WHERE file_path = ?",
+            (file_path,),
+        )
+        conn.execute(
+            "DELETE FROM sync_state WHERE file_path = ?", (file_path,)
+        )
+        # Clean up chunks/sections for documents at this path
+        doc_ids = [
+            r[0]
+            for r in conn.execute(
+                "SELECT doc_id FROM documents WHERE file_path = ?",
+                (file_path,),
+            ).fetchall()
+        ]
+        for doc_id in doc_ids:
+            conn.execute(
+                "DELETE FROM chunks WHERE doc_id = ?", (doc_id,)
+            )
+            conn.execute(
+                "DELETE FROM sections WHERE doc_id = ?", (doc_id,)
+            )
+        conn.execute(
+            "DELETE FROM documents WHERE file_path = ?", (file_path,)
+        )
+        conn.commit()
+        click.echo(f"Cleared index state for {file_path}.")
+        events = _single_file_events(file_path)
+
+    _run_index(config, events)
+
+
+def _run_index(config: AppConfig, events: list[FileEvent]) -> None:
     click.echo(f"Found {len(events)} files to process.")
     if not events:
         return

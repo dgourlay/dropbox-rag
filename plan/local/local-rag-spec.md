@@ -768,10 +768,13 @@ Same as cloud: returns query classification, layer weights, scores at each stage
 
 ### 8.2 Tools
 
-Same four tools as cloud:
+Five tools (four from cloud spec plus quick_search):
 
-**`search_documents(query, folder_filter?, date_filter?, top_k?, debug?)`**
-Full multi-stage hybrid retrieval. Returns ranked evidence with citations.
+**`search_documents(query, folder_filter?, date_filter?, top_k?, format?, debug?)`**
+Full multi-stage hybrid retrieval. Returns ranked evidence with citations. `format` parameter: "text" (default, LLM-friendly grouped output) or "json" (raw structured data).
+
+**`quick_search(query, folder_filter?, limit?)`**
+Lightweight document-level scan returning document summaries. Faster than search_documents for broad queries.
 
 **`get_document_context(doc_id?, chunk_id?, window?)`**
 Drill-down: doc_id returns full summary + all section summaries. chunk_id returns chunk ± window adjacent chunks.
