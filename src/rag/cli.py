@@ -620,7 +620,38 @@ def mcp_config(print_config: bool, install: str | None) -> None:
         config = generate_mcp_config()
         click.echo(json.dumps(config, indent=2))
     else:
-        click.echo("Use --print to display config or --install to install it.")
+        _show_mcp_help()
+
+
+def _show_mcp_help() -> None:
+    """Show MCP config help with auto-detected tools."""
+    from shutil import which
+
+    targets = {
+        "claude-code": {"cmd": "claude", "label": "Claude Code"},
+        "claude-desktop": {"cmd": None, "label": "Claude Desktop"},
+        "kiro": {"cmd": "kiro", "label": "Kiro"},
+    }
+
+    click.echo("Install MCP config for your AI tool:\n")
+
+    detected = []
+    for target, info in targets.items():
+        if info["cmd"] is not None and which(info["cmd"]):
+            detected.append(target)
+            click.echo(f"  rag mcp-config --install {target:<16} # {info['label']} (detected)")
+        elif target == "claude-desktop" and Path(
+            "~/Library/Application Support/Claude"
+        ).expanduser().exists():
+            detected.append(target)
+            click.echo(f"  rag mcp-config --install {target:<16} # {info['label']} (detected)")
+        else:
+            click.echo(f"  rag mcp-config --install {target:<16} # {info['label']}")
+
+    click.echo(f"\n  rag mcp-config --print                   # print raw JSON config")
+
+    if detected:
+        click.echo(f"\nDetected: {', '.join(targets[t]['label'] for t in detected)}")
 
 
 if __name__ == "__main__":
