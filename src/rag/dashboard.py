@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
     from rag.config import AppConfig
 
-_MAX_WIDTH = 90
+_MAX_WIDTH = 110
 
 
 def _sizeof_fmt(num: float) -> str:
