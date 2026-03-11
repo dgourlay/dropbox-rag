@@ -193,9 +193,9 @@ def register_tools(server: Server, config: AppConfig) -> None:
             if name == "get_sync_status":
                 return await _handle_sync_status(components)
             return _error_content(f"Unknown tool: {name}")
-        except Exception:
+        except Exception as exc:
             logger.exception("Tool %s failed", name)
-            return _error_content(f"Internal error executing {name}")
+            return _error_content(f"Error executing {name}: {type(exc).__name__}: {exc}")
 
 
 async def _handle_search(components: _Components, args: dict[str, Any]) -> list[types.TextContent]:
