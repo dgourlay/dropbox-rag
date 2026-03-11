@@ -6,7 +6,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from typing import TYPE_CHECKING
 
 from rag.results import (
@@ -164,13 +163,9 @@ class CliSummarizer:
         return env
 
     def _run_cli(self, prompt: str) -> str | None:
-        """Run the LLM CLI with the given prompt. Returns stdout or None on failure."""
+        """Run the LLM CLI with the given prompt via stdin. Returns stdout or None."""
         cmd = [self._config.command, *self._config.args]
         env = self._cli_env()
-
-        # For large prompts, write to temp file and pass as argument
-        if len(prompt) > MAX_EXCERPT_CHARS:
-            return self._run_cli_with_file(prompt, cmd)
 
         try:
             result = subprocess.run(
@@ -215,30 +210,4 @@ class CliSummarizer:
         except FileNotFoundError:
             logger.error("CLI %s not found", self._config.command)
             self._available = False
-            return None
-
-    def _run_cli_with_file(self, prompt: str, cmd: list[str]) -> str | None:
-        """Write prompt to temp file and pass as argument for large prompts."""
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-                f.write(prompt)
-                tmp_path = f.name
-
-            result = subprocess.run(
-                [*cmd, tmp_path],
-                capture_output=True,
-                text=True,
-                timeout=self._config.timeout_seconds,
-                env=self._cli_env(),
-            )
-            if result.returncode != 0:
-                logger.warning(
-                    "CLI (file mode) exited with code %d. stderr: %s",
-                    result.returncode,
-                    result.stderr[:500],
-                )
-                return None
-            return result.stdout
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            logger.error("CLI (file mode) error: %s", e)
             return None
