@@ -29,10 +29,16 @@ def check_qdrant_running(url: str = "http://localhost:6333") -> bool:
         return False
 
 
+DEFAULT_EXTENSIONS = ["pdf", "docx", "txt", "md"]
+DEFAULT_IGNORE = ["**/node_modules", "**/.git", "**/venv", "**/__pycache__"]
+
+
 def create_config(
     folders: list[str],
     llm_command: str | None = None,
     config_path: Path | None = None,
+    extensions: list[str] | None = None,
+    ignore: list[str] | None = None,
 ) -> Path:
     """Create config.toml with the given settings."""
     if config_path is None:
@@ -40,10 +46,17 @@ def create_config(
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
+    ext_list = extensions if extensions is not None else DEFAULT_EXTENSIONS
+    ign_list = ignore if ignore is not None else DEFAULT_IGNORE
+
     lines = ["[folders]"]
     # Format paths as TOML array
     formatted = [f'"{p}"' for p in folders]
     lines.append(f"paths = [{', '.join(formatted)}]")
+    ext_formatted = [f'"{e}"' for e in ext_list]
+    lines.append(f"extensions = [{', '.join(ext_formatted)}]")
+    ign_formatted = [f'"{i}"' for i in ign_list]
+    lines.append(f"ignore = [{', '.join(ign_formatted)}]")
     lines.append("")
 
     if llm_command:

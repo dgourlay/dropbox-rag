@@ -137,7 +137,26 @@ def init(add_folder: str | None, set_llm: str | None) -> None:
         click.echo("Error: At least one folder is required.", err=True)
         raise SystemExit(1)
 
-    # 2. LLM CLI
+    # 2. File extensions
+    from rag.init import DEFAULT_EXTENSIONS
+
+    default_ext_str = ", ".join(DEFAULT_EXTENSIONS)
+    click.echo(f"\nFile extensions to index [default: {default_ext_str}]:")
+    ext_input = click.prompt(
+        "  Extensions (comma-separated, or press Enter for defaults)",
+        default="",
+        show_default=False,
+    )
+    if ext_input.strip():
+        extensions: list[str] = [
+            e.strip().lstrip(".").lower() for e in ext_input.split(",") if e.strip()
+        ]
+        click.echo(f"    Using: {', '.join(extensions)}")
+    else:
+        extensions = list(DEFAULT_EXTENSIONS)
+        click.echo(f"    Using defaults: {default_ext_str}")
+
+    # 3. LLM CLI
     detected = detect_llm_cli()
     if detected:
         click.echo(f"\nDetected LLM CLI: {detected}")
@@ -147,7 +166,7 @@ def init(add_folder: str | None, set_llm: str | None) -> None:
         click.echo("\nNo LLM CLI tool detected (checked: claude, kiro-cli, codex).")
         llm = None
 
-    # 3. Docker / Qdrant
+    # 4. Docker / Qdrant
     click.echo()
     if check_docker_available():
         click.echo("Docker: available")
@@ -155,21 +174,18 @@ def init(add_folder: str | None, set_llm: str | None) -> None:
             click.echo("Qdrant: running")
         else:
             click.echo("Qdrant: not running")
-            click.echo("Start Qdrant with:")
-            click.echo(
-                "  docker run -d --name qdrant -p 6333:6333 -p 6334:6334 "
-                "-v ~/.local/share/qdrant:/qdrant/storage qdrant/qdrant"
-            )
+            click.echo("Start Qdrant with: docker compose up -d")
     else:
         click.echo("Docker: not found. Install Docker and Qdrant to proceed.")
 
-    # 4. Write config
-    result = create_config(folders, llm, config_path)
+    # 5. Write config
+    result = create_config(folders, llm, config_path, extensions=extensions)
     click.echo(f"\nConfig written to {result}")
     click.echo("\nNext steps:")
-    click.echo("  1. Ensure Qdrant is running")
+    click.echo("  1. Ensure Qdrant is running (docker compose up -d)")
     click.echo("  2. Run 'rag index' to index your documents")
-    click.echo("  3. Run 'rag serve' to start the MCP server")
+    click.echo("  3. Run 'rag search \"test\"' to verify")
+    click.echo("  4. Run 'rag mcp-config --install claude-desktop' for MCP")
 
 
 @main.command()
