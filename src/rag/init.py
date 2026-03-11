@@ -91,21 +91,26 @@ def generate_mcp_config(transport: str = "stdio") -> dict[str, object]:
     }
 
 
-def install_mcp_config(target: str) -> bool:
-    """Install MCP config for the given target (claude-desktop or claude-code).
+_MCP_CONFIG_PATHS: dict[str, str] = {
+    "claude-desktop": "~/Library/Application Support/Claude/claude_desktop_config.json",
+    "claude-code": "~/.claude.json",
+    "kiro": "~/.kiro/settings/mcp.json",
+}
 
+
+def install_mcp_config(target: str) -> bool:
+    """Install MCP config for the given target.
+
+    Supported targets: claude-desktop, claude-code, kiro.
     Returns True on success.
     """
     config = generate_mcp_config()
 
-    if target == "claude-desktop":
-        config_path = Path("~/Library/Application Support/Claude/claude_desktop_config.json")
-    elif target == "claude-code":
-        config_path = Path("~/.claude/settings.json")
-    else:
+    path_template = _MCP_CONFIG_PATHS.get(target)
+    if path_template is None:
         return False
 
-    config_path = config_path.expanduser()
+    config_path = Path(path_template).expanduser()
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     existing: dict[str, object] = {}

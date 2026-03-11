@@ -54,7 +54,7 @@ make download-models
 
 ## MCP Integration
 
-The main use case is as an MCP tool server so Claude can search your documents.
+The main use case is as an MCP tool server so your LLM can search your documents.
 
 ### Claude Code
 
@@ -108,6 +108,42 @@ Servers, and add:
 
 Restart Claude Desktop after adding the config.
 
+### Kiro
+
+**Option A -- auto-install:**
+
+```bash
+rag mcp-config --install kiro
+```
+
+This writes to `~/.kiro/settings/mcp.json` (user-level). For project-level
+config, use Option B with `.kiro/settings/mcp.json` in your project root.
+
+**Option B -- manual:** Add to `~/.kiro/settings/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "dropbox-rag": {
+      "command": "/path/to/dropbox-rag/.venv/bin/python",
+      "args": ["-m", "rag.cli", "serve"]
+    }
+  }
+}
+```
+
+**Option C -- kiro-cli:**
+
+```bash
+kiro-cli mcp add \
+  --name "dropbox-rag" \
+  --scope global \
+  --command "/path/to/dropbox-rag/.venv/bin/python" \
+  --args "-m rag.cli serve"
+```
+
+Run `rag mcp-config --print` to get the exact Python path for your venv.
+
 ### Available MCP tools
 
 Once connected, your LLM has access to these tools:
@@ -121,15 +157,15 @@ Once connected, your LLM has access to these tools:
 
 ### Verifying the connection
 
-After setup, ask Claude something like:
+After setup, ask your LLM something like:
 
 > "What documents do I have indexed?" (uses `list_recent_documents`)
 >
 > "Search my documents for gate operations procedures" (uses `search_documents`)
 
-If Claude responds with content from your documents, the MCP connection is
-working. If not, check `rag doctor` and verify the Python path in your MCP
-config points to the correct venv.
+If it responds with content from your documents, the MCP connection is working.
+If not, check `rag doctor` and verify the Python path in your MCP config points
+to the correct venv.
 
 
 ## CLI Reference

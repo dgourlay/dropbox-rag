@@ -498,11 +498,11 @@ def search(query: str, debug: bool, top_k: int) -> None:
 @click.option("--print", "print_config", is_flag=True, help="Print MCP config JSON.")
 @click.option(
     "--install",
-    type=click.Choice(["claude-desktop", "claude-code"]),
+    type=click.Choice(["claude-desktop", "claude-code", "kiro"]),
     help="Install MCP config for a target.",
 )
 def mcp_config(print_config: bool, install: str | None) -> None:
-    """Print or install MCP server config for Claude Desktop / Claude Code."""
+    """Print or install MCP server config for Claude Desktop / Claude Code / Kiro."""
     from rag.init import generate_mcp_config, install_mcp_config
 
     if install is not None:
