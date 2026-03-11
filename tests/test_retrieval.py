@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
 
-from rag.retrieval.engine import RRF_K, RetrievalEngine, rrf_fuse
+from rag.retrieval.engine import (
+    RECENCY_MAX_BOOST,
+    RRF_K,
+    RetrievalEngine,
+    apply_layer_weights,
+    apply_recency_boost,
+    rrf_fuse,
+)
 from rag.retrieval.query_analyzer import analyze_query
 from rag.types import (
     Citation,
@@ -24,14 +32,16 @@ def _make_hit(
     score: float = 0.9,
     doc_id: str = "doc1",
     text: str = "some text",
+    record_type: RecordType = RecordType.CHUNK,
+    modified_at: str = "2025-01-01",
 ) -> SearchHit:
     return SearchHit(
         point_id=point_id,
         score=score,
-        record_type=RecordType.CHUNK,
+        record_type=record_type,
         doc_id=doc_id,
         text=text,
-        payload={"file_path": "/docs/test.pdf", "title": "Test", "modified_at": "2025-01-01"},
+        payload={"file_path": "/docs/test.pdf", "title": "Test", "modified_at": modified_at},
     )
 
 
@@ -48,6 +58,7 @@ def _make_cited(hit: SearchHit) -> CitedEvidence:
         ),
         score=hit.score,
         record_type=hit.record_type.value,
+        doc_id=hit.doc_id,
     )
 
 
@@ -133,6 +144,159 @@ class TestQueryAnalyzer:
             result.classification = "specific"  # type: ignore[misc]
 
 
+# --- Layer Weighting Tests ---
+
+
+class TestApplyLayerWeights:
+    def test_broad_boosts_summaries(self) -> None:
+        """Broad classification boosts document and section summaries."""
+        hits = [
+            _make_hit("c1", score=1.0, record_type=RecordType.CHUNK),
+            _make_hit("ds1", score=1.0, record_type=RecordType.DOCUMENT_SUMMARY),
+            _make_hit("ss1", score=1.0, record_type=RecordType.SECTION_SUMMARY),
+        ]
+        weighted = apply_layer_weights(hits, "broad")
+        scores = {h.point_id: h.score for h in weighted}
+        assert scores["ds1"] == pytest.approx(1.5)
+        assert scores["ss1"] == pytest.approx(1.3)
+        assert scores["c1"] == pytest.approx(1.0)
+        # document_summary should be first after sorting
+        assert weighted[0].point_id == "ds1"
+
+    def test_specific_penalizes_summaries(self) -> None:
+        """Specific classification reduces summary scores."""
+        hits = [
+            _make_hit("c1", score=1.0, record_type=RecordType.CHUNK),
+            _make_hit("ds1", score=1.0, record_type=RecordType.DOCUMENT_SUMMARY),
+            _make_hit("ss1", score=1.0, record_type=RecordType.SECTION_SUMMARY),
+        ]
+        weighted = apply_layer_weights(hits, "specific")
+        scores = {h.point_id: h.score for h in weighted}
+        assert scores["ds1"] == pytest.approx(0.7)
+        assert scores["ss1"] == pytest.approx(0.9)
+        assert scores["c1"] == pytest.approx(1.0)
+        # chunk should be first
+        assert weighted[0].point_id == "c1"
+
+    def test_unknown_classification_defaults_to_specific(self) -> None:
+        """Unknown classification falls back to specific weights."""
+        hits = [_make_hit("ds1", score=1.0, record_type=RecordType.DOCUMENT_SUMMARY)]
+        weighted = apply_layer_weights(hits, "factual")
+        assert weighted[0].score == pytest.approx(0.7)
+
+    def test_preserves_relative_ordering_within_layer(self) -> None:
+        """Within the same record_type, relative ordering is preserved."""
+        hits = [
+            _make_hit("c1", score=0.8, record_type=RecordType.CHUNK),
+            _make_hit("c2", score=0.6, record_type=RecordType.CHUNK),
+        ]
+        weighted = apply_layer_weights(hits, "broad")
+        assert weighted[0].point_id == "c1"
+        assert weighted[1].point_id == "c2"
+
+    def test_empty_hits(self) -> None:
+        """Empty input returns empty output."""
+        assert apply_layer_weights([], "broad") == []
+
+    def test_result_sorted_descending(self) -> None:
+        """Output is sorted by weighted score descending."""
+        hits = [
+            _make_hit("a", score=0.5, record_type=RecordType.CHUNK),
+            _make_hit("b", score=0.3, record_type=RecordType.DOCUMENT_SUMMARY),
+        ]
+        weighted = apply_layer_weights(hits, "broad")
+        scores = [h.score for h in weighted]
+        assert scores == sorted(scores, reverse=True)
+
+
+# --- Recency Boost Tests ---
+
+
+class TestApplyRecencyBoost:
+    def test_recent_document_gets_max_boost(self) -> None:
+        """Document modified today gets ~30% boost."""
+        now = datetime(2025, 6, 15, tzinfo=UTC)
+        hits = [_make_hit("a", score=1.0, modified_at="2025-06-15T00:00:00+00:00")]
+        boosted = apply_recency_boost(hits, now=now)
+        # 0 days => boost = 0.3 * 2^0 = 0.3, new_score = 1.0 * 1.3
+        assert boosted[0].score == pytest.approx(1.3)
+
+    def test_90_day_old_document_gets_half_boost(self) -> None:
+        """Document modified 90 days ago gets ~15% boost (half-life)."""
+        now = datetime(2025, 6, 15, tzinfo=UTC)
+        old_date = now - timedelta(days=90)
+        hits = [_make_hit("a", score=1.0, modified_at=old_date.isoformat())]
+        boosted = apply_recency_boost(hits, now=now)
+        expected = 1.0 * (1.0 + 0.3 * 0.5)  # half-life decay
+        assert boosted[0].score == pytest.approx(expected)
+
+    def test_180_day_old_document_gets_quarter_boost(self) -> None:
+        """Two half-lives => 25% of max boost."""
+        now = datetime(2025, 6, 15, tzinfo=UTC)
+        old_date = now - timedelta(days=180)
+        hits = [_make_hit("a", score=1.0, modified_at=old_date.isoformat())]
+        boosted = apply_recency_boost(hits, now=now)
+        expected = 1.0 * (1.0 + 0.3 * 0.25)
+        assert boosted[0].score == pytest.approx(expected)
+
+    def test_very_old_document_negligible_boost(self) -> None:
+        """Document from years ago gets near-zero boost."""
+        now = datetime(2025, 6, 15, tzinfo=UTC)
+        old_date = now - timedelta(days=900)  # ~10 half-lives
+        hits = [_make_hit("a", score=1.0, modified_at=old_date.isoformat())]
+        boosted = apply_recency_boost(hits, now=now)
+        assert boosted[0].score > 1.0  # still some boost
+        assert boosted[0].score < 1.001  # but negligible
+
+    def test_missing_modified_at_no_boost(self) -> None:
+        """Hit without modified_at in payload gets no boost."""
+        hit = SearchHit(
+            point_id="x",
+            score=1.0,
+            record_type=RecordType.CHUNK,
+            doc_id="doc1",
+            text="text",
+            payload={},
+        )
+        boosted = apply_recency_boost([hit])
+        assert boosted[0].score == pytest.approx(1.0)
+
+    def test_invalid_date_no_boost(self) -> None:
+        """Invalid date string is handled gracefully."""
+        hits = [_make_hit("a", score=1.0, modified_at="not-a-date")]
+        boosted = apply_recency_boost(hits)
+        assert boosted[0].score == pytest.approx(1.0)
+
+    def test_recency_reorders_results(self) -> None:
+        """More recent document can overtake older one with same score."""
+        now = datetime(2025, 6, 15, tzinfo=UTC)
+        hits = [
+            _make_hit("old", score=1.0, modified_at="2024-01-01T00:00:00+00:00"),
+            _make_hit("new", score=1.0, modified_at="2025-06-15T00:00:00+00:00"),
+        ]
+        boosted = apply_recency_boost(hits, now=now)
+        assert boosted[0].point_id == "new"
+
+    def test_boost_max_30_percent(self) -> None:
+        """Boost never exceeds 30% of original score."""
+        now = datetime(2025, 6, 15, tzinfo=UTC)
+        hits = [_make_hit("a", score=2.0, modified_at="2025-06-15T00:00:00+00:00")]
+        boosted = apply_recency_boost(hits, now=now)
+        max_allowed = 2.0 * (1.0 + RECENCY_MAX_BOOST)
+        assert boosted[0].score <= max_allowed + 1e-10
+
+    def test_naive_datetime_treated_as_utc(self) -> None:
+        """Naive ISO datetime is treated as UTC."""
+        now = datetime(2025, 6, 15, tzinfo=UTC)
+        hits = [_make_hit("a", score=1.0, modified_at="2025-06-15")]
+        boosted = apply_recency_boost(hits, now=now)
+        assert boosted[0].score == pytest.approx(1.3)
+
+    def test_empty_hits(self) -> None:
+        """Empty input returns empty output."""
+        assert apply_recency_boost([]) == []
+
+
 # --- RetrievalEngine Tests ---
 
 
@@ -153,8 +317,22 @@ class TestRetrievalEngine:
         )
         return engine, vector_store, embedder, reranker, citation_assembler
 
+    def _setup_mocks(
+        self,
+        vs: MagicMock,
+        embedder: MagicMock,
+        reranker: MagicMock,
+        citations: MagicMock,
+    ) -> None:
+        """Common mock setup for tests that don't care about specific results."""
+        embedder.embed_query.return_value = [0.1] * 1024
+        vs.query_dense.return_value = []
+        vs.query_keyword.return_value = []
+        reranker.rerank.return_value = []
+        citations.assemble_citations.return_value = []
+
     def test_search_pipeline_order(self) -> None:
-        """search() calls embed -> dense -> keyword -> rerank -> citations."""
+        """search() calls embed -> 3 dense lanes -> keyword -> rerank -> citations."""
         engine, vs, embedder, reranker, citations = self._build_engine()
 
         query_vec = [0.1] * 1024
@@ -174,7 +352,8 @@ class TestRetrievalEngine:
         result = engine.search("test query")
 
         embedder.embed_query.assert_called_once_with("test query")
-        vs.query_dense.assert_called_once()
+        # 3 prefetch lanes
+        assert vs.query_dense.call_count == 3
         vs.query_keyword.assert_called_once()
         reranker.rerank.assert_called_once()
         citations.assemble_citations.assert_called_once()
@@ -182,21 +361,35 @@ class TestRetrievalEngine:
         assert isinstance(result, RetrievalResult)
         assert len(result.hits) == 1
 
+    def test_prefetch_lanes_record_types(self) -> None:
+        """Dense search issues 3 calls with correct record_type filters."""
+        engine, vs, embedder, reranker, citations = self._build_engine()
+        self._setup_mocks(vs, embedder, reranker, citations)
+
+        engine.search("test query")
+
+        calls = vs.query_dense.call_args_list
+        assert len(calls) == 3
+        # Check record_type kwargs
+        assert calls[0].kwargs.get("record_type") == RecordType.DOCUMENT_SUMMARY
+        assert calls[1].kwargs.get("record_type") == RecordType.SECTION_SUMMARY
+        assert calls[2].kwargs.get("record_type") == RecordType.CHUNK
+        # Check limits
+        assert calls[0][0][2] == 20  # doc summaries: top 20
+        assert calls[1][0][2] == 20  # section summaries: top 20
+        assert calls[2][0][2] == 30  # chunks: top 30
+
     def test_filters_passed_through(self) -> None:
         """Explicit filters are forwarded to vector store."""
         engine, vs, embedder, reranker, citations = self._build_engine()
-
-        embedder.embed_query.return_value = [0.1] * 1024
-        vs.query_dense.return_value = []
-        vs.query_keyword.return_value = []
-        reranker.rerank.return_value = []
-        citations.assemble_citations.return_value = []
+        self._setup_mocks(vs, embedder, reranker, citations)
 
         filters = SearchFilters(folder_filter="/my/folder")
         engine.search("test", filters=filters)
 
-        dense_call_filters = vs.query_dense.call_args[0][1]
-        assert dense_call_filters.folder_filter == "/my/folder"
+        # All 3 dense calls should have the filter
+        for call in vs.query_dense.call_args_list:
+            assert call[0][1].folder_filter == "/my/folder"
 
         keyword_call_filters = vs.query_keyword.call_args[0][1]
         assert keyword_call_filters.folder_filter == "/my/folder"
@@ -204,12 +397,7 @@ class TestRetrievalEngine:
     def test_debug_mode_includes_timing(self) -> None:
         """Debug mode populates debug_info with timing data."""
         engine, vs, embedder, reranker, citations = self._build_engine()
-
-        embedder.embed_query.return_value = [0.1] * 1024
-        vs.query_dense.return_value = []
-        vs.query_keyword.return_value = []
-        reranker.rerank.return_value = []
-        citations.assemble_citations.return_value = []
+        self._setup_mocks(vs, embedder, reranker, citations)
 
         result = engine.search("test query", debug=True)
 
@@ -221,15 +409,24 @@ class TestRetrievalEngine:
         assert "total_ms" in result.debug_info
         assert "query_classification" in result.debug_info
 
+    def test_debug_mode_includes_new_fields(self) -> None:
+        """Debug mode includes prefetch lane counts, layer weights, and recency flag."""
+        engine, vs, embedder, reranker, citations = self._build_engine()
+        self._setup_mocks(vs, embedder, reranker, citations)
+
+        result = engine.search("test query", debug=True)
+
+        assert result.debug_info is not None
+        assert "dense_doc_summary_count" in result.debug_info
+        assert "dense_section_summary_count" in result.debug_info
+        assert "dense_chunk_count" in result.debug_info
+        assert "layer_weights" in result.debug_info
+        assert result.debug_info["recency_applied"] is True
+
     def test_debug_false_no_debug_info(self) -> None:
         """Without debug, debug_info is None."""
         engine, vs, embedder, reranker, citations = self._build_engine()
-
-        embedder.embed_query.return_value = [0.1] * 1024
-        vs.query_dense.return_value = []
-        vs.query_keyword.return_value = []
-        reranker.rerank.return_value = []
-        citations.assemble_citations.return_value = []
+        self._setup_mocks(vs, embedder, reranker, citations)
 
         result = engine.search("test query", debug=False)
         assert result.debug_info is None
@@ -237,12 +434,7 @@ class TestRetrievalEngine:
     def test_custom_top_k(self) -> None:
         """Custom top_k is passed to reranker."""
         engine, vs, embedder, reranker, citations = self._build_engine()
-
-        embedder.embed_query.return_value = [0.1] * 1024
-        vs.query_dense.return_value = []
-        vs.query_keyword.return_value = []
-        reranker.rerank.return_value = []
-        citations.assemble_citations.return_value = []
+        self._setup_mocks(vs, embedder, reranker, citations)
 
         engine.search("test", top_k=5)
 
@@ -252,12 +444,7 @@ class TestRetrievalEngine:
     def test_query_classification_in_result(self) -> None:
         """Result includes query classification."""
         engine, vs, embedder, reranker, citations = self._build_engine()
-
-        embedder.embed_query.return_value = [0.1] * 1024
-        vs.query_dense.return_value = []
-        vs.query_keyword.return_value = []
-        reranker.rerank.return_value = []
-        citations.assemble_citations.return_value = []
+        self._setup_mocks(vs, embedder, reranker, citations)
 
         result = engine.search("what is this")
         assert result.query_classification == "broad"
@@ -265,12 +452,7 @@ class TestRetrievalEngine:
     def test_async_search_wraps_sync(self) -> None:
         """async_search dispatches to search via asyncio.to_thread."""
         engine, vs, embedder, reranker, citations = self._build_engine()
-
-        embedder.embed_query.return_value = [0.1] * 1024
-        vs.query_dense.return_value = []
-        vs.query_keyword.return_value = []
-        reranker.rerank.return_value = []
-        citations.assemble_citations.return_value = []
+        self._setup_mocks(vs, embedder, reranker, citations)
 
         result = asyncio.run(engine.async_search("test query"))
 

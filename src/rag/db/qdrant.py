@@ -25,8 +25,10 @@ _VECTOR_DIM = 1024
 _COLLECTION_DISTANCE = models.Distance.COSINE
 
 
-def _build_filter(filters: SearchFilters) -> models.Filter | None:
-    """Build a Qdrant filter from SearchFilters."""
+def _build_filter(
+    filters: SearchFilters, *, record_type: str | None = None
+) -> models.Filter | None:
+    """Build a Qdrant filter from SearchFilters and optional record_type."""
     conditions: list[models.FieldCondition] = []
 
     if filters.folder_filter is not None:
@@ -50,6 +52,14 @@ def _build_filter(filters: SearchFilters) -> models.Filter | None:
             models.FieldCondition(
                 key="modified_at",
                 range=models.Range(gte=filters.date_filter),
+            )
+        )
+
+    if record_type is not None:
+        conditions.append(
+            models.FieldCondition(
+                key="record_type",
+                match=models.MatchValue(value=record_type),
             )
         )
 
@@ -174,10 +184,14 @@ class QdrantVectorStore:
             )
 
     def query_dense(
-        self, vector: list[float], filters: SearchFilters, limit: int
+        self,
+        vector: list[float],
+        filters: SearchFilters,
+        limit: int,
+        record_type: str | None = None,
     ) -> list[SearchHit]:
         """Dense vector search using query_points() API."""
-        query_filter = _build_filter(filters)
+        query_filter = _build_filter(filters, record_type=record_type)
 
         response = self._client.query_points(
             collection_name=self._collection,
@@ -324,10 +338,14 @@ class AsyncQdrantVectorStore:
             )
 
     async def query_dense(
-        self, vector: list[float], filters: SearchFilters, limit: int
+        self,
+        vector: list[float],
+        filters: SearchFilters,
+        limit: int,
+        record_type: str | None = None,
     ) -> list[SearchHit]:
         """Dense vector search using query_points() API."""
-        query_filter = _build_filter(filters)
+        query_filter = _build_filter(filters, record_type=record_type)
 
         response = await self._client.query_points(
             collection_name=self._collection,

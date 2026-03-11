@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from rag.retrieval.query_analyzer import analyze_query
 from rag.types import (
+    RecordType,
     RetrievalResult,
     SearchFilters,
     SearchHit,
@@ -19,6 +22,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 RRF_K = 60  # RRF constant
+
+# Layer weight presets keyed by query classification
+LAYER_WEIGHTS: dict[str, dict[str, float]] = {
+    "broad": {
+        RecordType.DOCUMENT_SUMMARY: 1.5,
+        RecordType.SECTION_SUMMARY: 1.3,
+        RecordType.CHUNK: 1.0,
+    },
+    "specific": {
+        RecordType.DOCUMENT_SUMMARY: 0.7,
+        RecordType.SECTION_SUMMARY: 0.9,
+        RecordType.CHUNK: 1.0,
+    },
+}
+
+# Recency boost parameters
+RECENCY_HALF_LIFE_DAYS = 90
+RECENCY_MAX_BOOST = 0.3
 
 
 def rrf_fuse(
@@ -56,8 +77,66 @@ def rrf_fuse(
     return results
 
 
+def apply_layer_weights(hits: list[SearchHit], classification: str) -> list[SearchHit]:
+    """Multiply RRF scores by layer weights based on query classification."""
+    weights = LAYER_WEIGHTS.get(classification, LAYER_WEIGHTS["specific"])
+    weighted: list[SearchHit] = []
+    for hit in hits:
+        w = weights.get(hit.record_type, 1.0)
+        weighted.append(
+            SearchHit(
+                point_id=hit.point_id,
+                score=hit.score * w,
+                record_type=hit.record_type,
+                doc_id=hit.doc_id,
+                text=hit.text,
+                payload=hit.payload,
+            )
+        )
+    weighted.sort(key=lambda h: h.score, reverse=True)
+    return weighted
+
+
+def apply_recency_boost(
+    hits: list[SearchHit],
+    now: datetime | None = None,
+) -> list[SearchHit]:
+    """Apply exponential-decay recency boost. 90-day half-life, max 30% influence."""
+    if now is None:
+        now = datetime.now(tz=UTC)
+
+    boosted: list[SearchHit] = []
+    for hit in hits:
+        modified_at_str = hit.payload.get("modified_at")
+        if modified_at_str:
+            try:
+                modified_at = datetime.fromisoformat(modified_at_str)
+                if modified_at.tzinfo is None:
+                    modified_at = modified_at.replace(tzinfo=UTC)
+                days_since = max((now - modified_at).total_seconds() / 86400, 0)
+                boost = RECENCY_MAX_BOOST * math.pow(2, -days_since / RECENCY_HALF_LIFE_DAYS)
+                new_score = hit.score * (1.0 + boost)
+            except (ValueError, TypeError):
+                new_score = hit.score
+        else:
+            new_score = hit.score
+
+        boosted.append(
+            SearchHit(
+                point_id=hit.point_id,
+                score=new_score,
+                record_type=hit.record_type,
+                doc_id=hit.doc_id,
+                text=hit.text,
+                payload=hit.payload,
+            )
+        )
+    boosted.sort(key=lambda h: h.score, reverse=True)
+    return boosted
+
+
 class RetrievalEngine:
-    """Multi-stage retrieval: embed -> dense + keyword -> RRF -> rerank -> citations."""
+    """Multi-stage retrieval with prefetch lanes, layer weighting, and recency boost."""
 
     def __init__(
         self,
@@ -107,16 +186,26 @@ class RetrievalEngine:
         if debug:
             debug_info["embed_ms"] = int((time.monotonic() - t0) * 1000)
 
-        # 3. Dense search
+        # 3. Dense search — 3 prefetch lanes by record_type
         t0 = time.monotonic()
-        dense_hits = self._vector_store.query_dense(
-            query_vector, effective_filters, self._top_k_candidates
+        dense_doc_summaries = self._vector_store.query_dense(
+            query_vector, effective_filters, 20, record_type=RecordType.DOCUMENT_SUMMARY
         )
+        dense_section_summaries = self._vector_store.query_dense(
+            query_vector, effective_filters, 20, record_type=RecordType.SECTION_SUMMARY
+        )
+        dense_chunks = self._vector_store.query_dense(
+            query_vector, effective_filters, 30, record_type=RecordType.CHUNK
+        )
+        dense_hits = dense_doc_summaries + dense_section_summaries + dense_chunks
         if debug:
             debug_info["dense_ms"] = int((time.monotonic() - t0) * 1000)
             debug_info["dense_count"] = len(dense_hits)
+            debug_info["dense_doc_summary_count"] = len(dense_doc_summaries)
+            debug_info["dense_section_summary_count"] = len(dense_section_summaries)
+            debug_info["dense_chunk_count"] = len(dense_chunks)
 
-        # 4. Keyword search
+        # 4. Keyword search (chunks only)
         t0 = time.monotonic()
         keyword_hits = self._vector_store.query_keyword(
             query, effective_filters, self._top_k_candidates
@@ -130,14 +219,28 @@ class RetrievalEngine:
         if debug:
             debug_info["fused_count"] = len(fused)
 
-        # 6. Rerank
+        # 6. Layer weighting
+        weighted = apply_layer_weights(fused, analysis.classification)
+        if debug:
+            debug_info["layer_weights"] = LAYER_WEIGHTS.get(
+                analysis.classification, LAYER_WEIGHTS["specific"]
+            )
+
+        # 7. Rerank
         t0 = time.monotonic()
-        reranked = self._reranker.rerank(query, fused[: self._top_k_candidates], effective_top_k)
+        reranked = self._reranker.rerank(
+            query, weighted[: self._top_k_candidates], effective_top_k
+        )
         if debug:
             debug_info["rerank_ms"] = int((time.monotonic() - t0) * 1000)
 
-        # 7. Assemble citations
-        cited = self._citations.assemble_citations(reranked)
+        # 8. Recency boost
+        boosted = apply_recency_boost(reranked)
+        if debug:
+            debug_info["recency_applied"] = True
+
+        # 9. Assemble citations
+        cited = self._citations.assemble_citations(boosted)
 
         if debug:
             debug_info["total_ms"] = int((time.monotonic() - start) * 1000)

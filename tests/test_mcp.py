@@ -12,8 +12,10 @@ from rag.mcp.tools import (
     _TOOLS,
     _Components,
     _error_content,
+    _format_results_as_text,
     _handle_get_context,
     _handle_list_recent,
+    _handle_quick_search,
     _handle_search,
     _handle_sync_status,
 )
@@ -59,7 +61,9 @@ def _make_components() -> tuple[_Components, MagicMock, MagicMock]:
     return components, mock_db, mock_engine
 
 
-def _make_cited_evidence(text: str = "sample text", score: float = 0.95) -> CitedEvidence:
+def _make_cited_evidence(
+    text: str = "sample text", score: float = 0.95, doc_id: str = "doc-1"
+) -> CitedEvidence:
     return CitedEvidence(
         text=text,
         citation=Citation(
@@ -72,6 +76,7 @@ def _make_cited_evidence(text: str = "sample text", score: float = 0.95) -> Cite
         ),
         score=score,
         record_type="chunk",
+        doc_id=doc_id,
     )
 
 
@@ -119,13 +124,14 @@ def _make_chunk_row(
 
 class TestToolRegistration:
     def test_tools_defined(self) -> None:
-        """All 4 tools are defined in _TOOLS list."""
+        """All 5 tools are defined in _TOOLS list."""
         names = {t.name for t in _TOOLS}
         assert names == {
             "search_documents",
             "get_document_context",
             "list_recent_documents",
             "get_sync_status",
+            "quick_search",
         }
 
     def test_tool_schemas_have_required_fields(self) -> None:
@@ -152,8 +158,8 @@ class TestToolRegistration:
 
 
 class TestSearchDocuments:
-    def test_returns_results(self) -> None:
-        """search_documents returns cited evidence."""
+    def test_returns_results_json(self) -> None:
+        """search_documents with format=json returns cited evidence JSON."""
         components, _db, mock_engine = _make_components()
         cited = [_make_cited_evidence()]
         mock_engine.async_search.return_value = RetrievalResult(
@@ -161,13 +167,31 @@ class TestSearchDocuments:
             query_classification="broad",
         )
 
-        result = asyncio.run(_handle_search(components, {"query": "test query"}))
+        result = asyncio.run(_handle_search(components, {"query": "test query", "format": "json"}))
 
         assert len(result) == 1
         data = json.loads(result[0].text)
         assert len(data["results"]) == 1
         assert data["results"][0]["text"] == "sample text"
         assert data["query_classification"] == "broad"
+
+    def test_returns_results_text_default(self) -> None:
+        """search_documents defaults to text format."""
+        components, mock_db, mock_engine = _make_components()
+        cited = [_make_cited_evidence()]
+        mock_engine.async_search.return_value = RetrievalResult(
+            hits=cited,
+            query_classification="broad",
+        )
+        mock_db.get_document.return_value = _make_document_row()
+
+        result = asyncio.run(_handle_search(components, {"query": "test query"}))
+
+        assert len(result) == 1
+        text = result[0].text
+        # Should be plain text, not JSON
+        assert "Found 1 results across 1 documents" in text
+        assert "Test Doc" in text
 
     def test_with_filters(self) -> None:
         """search_documents passes folder and date filters."""
@@ -196,8 +220,24 @@ class TestSearchDocuments:
         assert call_args.kwargs["top_k"] == 5
         assert call_args.kwargs["debug"] is True
 
-    def test_debug_info_included(self) -> None:
-        """search_documents includes debug_info when debug=True."""
+    def test_debug_info_included_json(self) -> None:
+        """search_documents includes debug_info when debug=True and format=json."""
+        components, _db, mock_engine = _make_components()
+        mock_engine.async_search.return_value = RetrievalResult(
+            hits=[],
+            query_classification="broad",
+            debug_info={"total_ms": 42},
+        )
+
+        result = asyncio.run(
+            _handle_search(components, {"query": "test", "debug": True, "format": "json"})
+        )
+
+        data = json.loads(result[0].text)
+        assert data["debug_info"]["total_ms"] == 42
+
+    def test_debug_info_included_text(self) -> None:
+        """search_documents includes debug_info in text format."""
         components, _db, mock_engine = _make_components()
         mock_engine.async_search.return_value = RetrievalResult(
             hits=[],
@@ -207,8 +247,8 @@ class TestSearchDocuments:
 
         result = asyncio.run(_handle_search(components, {"query": "test", "debug": True}))
 
-        data = json.loads(result[0].text)
-        assert data["debug_info"]["total_ms"] == 42
+        text = result[0].text
+        assert "total_ms: 42" in text
 
 
 # --- get_document_context Tests ---
@@ -395,3 +435,234 @@ class TestErrorHandling:
 
         with pytest.raises(ValidationError):
             asyncio.run(_handle_search(components, {}))
+
+
+# --- Text Formatting Tests ---
+
+
+class TestFormatResultsAsText:
+    def test_empty_results(self) -> None:
+        """Empty results produce 'No results found.' message."""
+        text = _format_results_as_text([], {}, None, None)
+        assert "No results found." in text
+
+    def test_empty_results_with_classification(self) -> None:
+        """Empty results include query classification."""
+        text = _format_results_as_text([], {}, "broad", None)
+        assert "No results found." in text
+        assert "Query classified as: broad" in text
+
+    def test_groups_by_document(self) -> None:
+        """Results from same document are grouped together."""
+        hit1 = _make_cited_evidence(text="first hit", score=0.9)
+        hit2 = _make_cited_evidence(text="second hit", score=0.8)
+        text = _format_results_as_text(
+            [hit1, hit2],
+            {"doc-1": _make_document_row()},
+            "specific",
+            None,
+        )
+        assert "Found 2 results across 1 documents" in text
+        assert "## Test Doc" in text
+        assert "[1]" in text
+        assert "[2]" in text
+        assert "first hit" in text
+        assert "second hit" in text
+
+    def test_shows_summary_and_topics(self) -> None:
+        """Text output includes document summary and topics."""
+        hit = _make_cited_evidence()
+        doc = _make_document_row()
+        doc.key_topics = ["testing", "quality"]
+        text = _format_results_as_text(
+            [hit],
+            {"doc-1": doc},
+            None,
+            None,
+        )
+        assert "Summary: A test document about testing." in text
+        assert "Topics: testing, quality" in text
+
+    def test_truncates_long_text(self) -> None:
+        """Text longer than 800 chars is truncated."""
+        long_text = "x" * 1000
+        hit = _make_cited_evidence(text=long_text)
+        text = _format_results_as_text(
+            [hit],
+            {"doc-1": None},
+            None,
+            None,
+        )
+        assert "..." in text
+        assert len(long_text) > 800  # original is long
+        # The truncated text in output should be 800 chars
+        for line in text.split("\n"):
+            assert len(line) <= 800
+
+    def test_shows_citation_location(self) -> None:
+        """Text output includes section and page info."""
+        hit = _make_cited_evidence()
+        text = _format_results_as_text(
+            [hit],
+            {"doc-1": None},
+            None,
+            None,
+        )
+        assert "§ Intro" in text
+        assert "p. 1" in text
+
+    def test_shows_score(self) -> None:
+        """Text output includes score."""
+        hit = _make_cited_evidence(score=0.899)
+        text = _format_results_as_text(
+            [hit],
+            {"doc-1": None},
+            None,
+            None,
+        )
+        assert "(score: 0.899)" in text
+
+    def test_footer_with_classification(self) -> None:
+        """Footer includes query classification and result count."""
+        hit = _make_cited_evidence()
+        text = _format_results_as_text(
+            [hit],
+            {"doc-1": None},
+            "specific",
+            None,
+        )
+        assert "---" in text
+        assert "Query classified as: specific" in text
+        assert "1 results from 1 documents" in text
+
+    def test_debug_info_appended(self) -> None:
+        """Debug info is appended when provided."""
+        hit = _make_cited_evidence()
+        text = _format_results_as_text(
+            [hit],
+            {"doc-1": None},
+            None,
+            {"total_ms": 42, "rerank_ms": 10},
+        )
+        assert "Debug info:" in text
+        assert "total_ms: 42" in text
+        assert "rerank_ms: 10" in text
+
+    def test_multiple_documents(self) -> None:
+        """Results from different documents are grouped separately."""
+        hit1 = CitedEvidence(
+            text="from doc A",
+            citation=Citation(
+                title="Doc A",
+                path="/docs/a.pdf",
+                section="Intro",
+                pages="p. 1",
+                modified="2025-01-01",
+                label="a.pdf",
+            ),
+            score=0.9,
+            record_type="chunk",
+            doc_id="doc-a",
+        )
+        hit2 = CitedEvidence(
+            text="from doc B",
+            citation=Citation(
+                title="Doc B",
+                path="/docs/b.pdf",
+                section="Summary",
+                pages="p. 5",
+                modified="2025-01-01",
+                label="b.pdf",
+            ),
+            score=0.8,
+            record_type="chunk",
+            doc_id="doc-b",
+        )
+        text = _format_results_as_text(
+            [hit1, hit2],
+            {"doc-a": None, "doc-b": None},
+            None,
+            None,
+        )
+        assert "Found 2 results across 2 documents" in text
+        assert "## Doc A" in text
+        assert "## Doc B" in text
+
+
+# --- quick_search Tests ---
+
+
+class TestQuickSearch:
+    def test_returns_document_info(self) -> None:
+        """quick_search returns document-level info."""
+        components, mock_db, mock_engine = _make_components()
+        mock_engine.async_search.return_value = RetrievalResult(
+            hits=[_make_cited_evidence()],
+            query_classification="broad",
+        )
+        doc = _make_document_row()
+        doc.key_topics = ["testing", "quality"]
+        mock_db.get_document.return_value = doc
+
+        result = asyncio.run(_handle_quick_search(components, {"query": "test"}))
+
+        text = result[0].text
+        assert "Found 1 matching documents" in text
+        assert "## Test Document" in text
+        assert "Summary: A test document about testing." in text
+        assert "Topics: testing, quality" in text
+        assert "Path: /docs/test.pdf" in text
+        assert "Modified: 2025-01-01T00:00:00" in text
+
+    def test_no_results(self) -> None:
+        """quick_search with no results returns appropriate message."""
+        components, _mock_db, mock_engine = _make_components()
+        mock_engine.async_search.return_value = RetrievalResult(
+            hits=[], query_classification="broad"
+        )
+
+        result = asyncio.run(_handle_quick_search(components, {"query": "nothing"}))
+
+        assert "No matching documents found." in result[0].text
+
+    def test_deduplicates_documents(self) -> None:
+        """quick_search deduplicates multiple hits from same document."""
+        components, mock_db, mock_engine = _make_components()
+        hit1 = _make_cited_evidence(text="chunk 1", score=0.9)
+        hit2 = _make_cited_evidence(text="chunk 2", score=0.8)
+        mock_engine.async_search.return_value = RetrievalResult(
+            hits=[hit1, hit2],
+            query_classification="broad",
+        )
+        mock_db.get_document.return_value = _make_document_row()
+
+        result = asyncio.run(_handle_quick_search(components, {"query": "test"}))
+
+        text = result[0].text
+        assert "Found 1 matching documents" in text
+        # Should only have one document header
+        assert text.count("## Test Document") == 1
+
+    def test_passes_top_k(self) -> None:
+        """quick_search passes top_k to engine."""
+        components, _mock_db, mock_engine = _make_components()
+        mock_engine.async_search.return_value = RetrievalResult(
+            hits=[], query_classification="broad"
+        )
+
+        asyncio.run(_handle_quick_search(components, {"query": "test", "top_k": 3}))
+
+        call_args = mock_engine.async_search.call_args
+        assert call_args.kwargs["top_k"] == 3
+
+    def test_passes_folder_filter(self) -> None:
+        """quick_search passes folder_filter to engine."""
+        components, _mock_db, mock_engine = _make_components()
+        mock_engine.async_search.return_value = RetrievalResult(
+            hits=[], query_classification="broad"
+        )
+
+        asyncio.run(_handle_quick_search(components, {"query": "test", "folder_filter": "/docs"}))
+
+        call_args = mock_engine.async_search.call_args
+        assert call_args.kwargs["filters"].folder_filter == "/docs"

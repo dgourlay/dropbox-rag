@@ -68,7 +68,7 @@ class SummarizationConfig(BaseModel):
     enabled: bool = True
     provider: str = "cli"
     command: str = "claude"
-    args: list[str] = ["--print", "--max-tokens", "2048"]
+    args: list[str] = ["--print"]
     timeout_seconds: int = 60
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
 import mcp.types as types
@@ -13,6 +14,7 @@ if TYPE_CHECKING:
     from rag.config import AppConfig
     from rag.db.models import SqliteMetadataDB
     from rag.retrieval.engine import RetrievalEngine
+    from rag.types import CitedEvidence, DocumentRow
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +106,15 @@ _TOOLS: list[types.Tool] = [
                     "description": "Include timing and debug info in response",
                     "default": False,
                 },
+                "format": {
+                    "type": "string",
+                    "enum": ["text", "json"],
+                    "description": (
+                        "Output format: 'text' (default) returns LLM-friendly grouped text, "
+                        "'json' returns raw JSON for programmatic use"
+                    ),
+                    "default": "text",
+                },
             },
             "required": ["query"],
         },
@@ -163,6 +174,30 @@ _TOOLS: list[types.Tool] = [
             "properties": {},
         },
     ),
+    types.Tool(
+        name="quick_search",
+        description=(
+            "Quick document scan — returns document titles, summaries, and topics "
+            "matching a query. Use this for an overview before drilling into "
+            "specific documents with search_documents."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query text"},
+                "folder_filter": {
+                    "type": "string",
+                    "description": "Restrict to a specific folder path",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Number of results to return (default 5)",
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+    ),
 ]
 
 
@@ -192,10 +227,91 @@ def register_tools(server: Server, config: AppConfig) -> None:
                 return await _handle_list_recent(components, args)
             if name == "get_sync_status":
                 return await _handle_sync_status(components)
+            if name == "quick_search":
+                return await _handle_quick_search(components, args)
             return _error_content(f"Unknown tool: {name}")
         except Exception as exc:
             logger.exception("Tool %s failed", name)
             return _error_content(f"Error executing {name}: {type(exc).__name__}: {exc}")
+
+
+def _format_results_as_text(
+    hits: list[CitedEvidence],
+    doc_lookup: dict[str, DocumentRow | None],
+    query_classification: str | None,
+    debug_info: dict[str, Any] | None,
+) -> str:
+    """Format search results as LLM-friendly grouped text."""
+    if not hits:
+        lines: list[str] = ["No results found."]
+        if query_classification:
+            lines.append(f"\n---\nQuery classified as: {query_classification}")
+        if debug_info:
+            lines.append("")
+            lines.append("Debug info:")
+            for key, value in debug_info.items():
+                lines.append(f"  {key}: {value}")
+        return "\n".join(lines)
+
+    # Group hits by doc_id, preserving rank order
+    groups: dict[str, list[tuple[int, CitedEvidence]]] = defaultdict(list)
+    for rank, hit in enumerate(hits, 1):
+        groups[hit.doc_id].append((rank, hit))
+
+    unique_docs = len(groups)
+    total_results = len(hits)
+    lines: list[str] = [f"Found {total_results} results across {unique_docs} documents.\n"]
+
+    for _doc_path, ranked_hits in groups.items():
+        # Use the first hit's citation for the title
+        first_hit = ranked_hits[0][1]
+        title = first_hit.citation.title
+
+        lines.append(f"## {title}")
+
+        # Look up doc for summary and topics
+        doc = doc_lookup.get(first_hit.doc_id)
+        if doc is not None:
+            if doc.summary_l1:
+                lines.append(f"Summary: {doc.summary_l1}")
+            if doc.key_topics:
+                lines.append(f"Topics: {', '.join(doc.key_topics)}")
+
+        lines.append("")
+
+        for rank, hit in ranked_hits:
+            # Build location string
+            loc_parts: list[str] = []
+            if hit.citation.section:
+                loc_parts.append(f"§ {hit.citation.section}")
+            if hit.citation.pages:
+                loc_parts.append(hit.citation.pages)
+            loc_str = ", ".join(loc_parts)
+
+            lines.append(f"[{rank}] (score: {hit.score:.3f}) {loc_str}")
+
+            # Truncate long text to ~800 chars
+            text = hit.text
+            if len(text) > 800:
+                text = text[:797] + "..."
+            lines.append(text)
+            lines.append("")
+
+    # Footer
+    footer_parts: list[str] = []
+    if query_classification:
+        footer_parts.append(f"Query classified as: {query_classification}")
+    footer_parts.append(f"{total_results} results from {unique_docs} documents")
+    lines.append("---")
+    lines.append(" | ".join(footer_parts))
+
+    if debug_info:
+        lines.append("")
+        lines.append("Debug info:")
+        for key, value in debug_info.items():
+            lines.append(f"  {key}: {value}")
+
+    return "\n".join(lines)
 
 
 async def _handle_search(components: _Components, args: dict[str, Any]) -> list[types.TextContent]:
@@ -214,12 +330,27 @@ async def _handle_search(components: _Components, args: dict[str, Any]) -> list[
         debug=inp.debug,
     )
 
-    output = SearchDocumentsOutput(
-        results=result.hits,
+    if inp.format == "json":
+        output = SearchDocumentsOutput(
+            results=result.hits,
+            query_classification=result.query_classification,
+            debug_info=result.debug_info,
+        )
+        return [types.TextContent(type="text", text=output.model_dump_json())]
+
+    # Text format: fetch document info for summaries/topics
+    doc_ids = {hit.doc_id for hit in result.hits}
+    doc_lookup: dict[str, DocumentRow | None] = {}
+    for doc_id in doc_ids:
+        doc_lookup[doc_id] = await asyncio.to_thread(components.db.get_document, doc_id)
+
+    text = _format_results_as_text(
+        hits=result.hits,
+        doc_lookup=doc_lookup,
         query_classification=result.query_classification,
         debug_info=result.debug_info,
     )
-    return [types.TextContent(type="text", text=output.model_dump_json())]
+    return [types.TextContent(type="text", text=text)]
 
 
 async def _handle_get_context(
@@ -357,3 +488,50 @@ async def _handle_sync_status(
         folders=folders,
     )
     return [types.TextContent(type="text", text=output.model_dump_json())]
+
+
+async def _handle_quick_search(
+    components: _Components, args: dict[str, Any]
+) -> list[types.TextContent]:
+    from rag.types import QuickSearchInput, SearchFilters
+
+    inp = QuickSearchInput.model_validate(args)
+    filters = SearchFilters(folder_filter=inp.folder_filter)
+
+    result = await components.engine.async_search(
+        query=inp.query,
+        filters=filters,
+        top_k=inp.top_k,
+        debug=False,
+    )
+
+    # Collect unique doc_ids from results, preserving order
+    seen_doc_ids: list[str] = []
+    for hit in result.hits:
+        if hit.doc_id not in seen_doc_ids:
+            seen_doc_ids.append(hit.doc_id)
+
+    # Fetch document details from SQLite
+    lines: list[str] = []
+    doc_count = 0
+    for doc_id in seen_doc_ids:
+        doc = await asyncio.to_thread(components.db.get_document, doc_id)
+        if doc is None:
+            continue
+        doc_count += 1
+        title = doc.title or "Untitled"
+        lines.append(f"## {title}")
+        if doc.summary_l1:
+            lines.append(f"Summary: {doc.summary_l1}")
+        if doc.key_topics:
+            lines.append(f"Topics: {', '.join(doc.key_topics)}")
+        lines.append(f"Path: {doc.file_path}")
+        lines.append(f"Modified: {doc.modified_at}")
+        lines.append(f"Doc ID: {doc.doc_id}")
+        lines.append("")
+
+    if not lines:
+        return [types.TextContent(type="text", text="No matching documents found.")]
+
+    header = f"Found {doc_count} matching documents.\n\n"
+    return [types.TextContent(type="text", text=header + "\n".join(lines))]

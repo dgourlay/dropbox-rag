@@ -11,11 +11,13 @@ from rag.pipeline.chunker import chunk_document
 from rag.pipeline.classifier import classify
 from rag.pipeline.normalizer import normalize
 from rag.pipeline.parser.base import get_parser
-from rag.results import ParseSuccess
+from rag.results import ParseSuccess, SectionSummarySuccess, SummarySuccess
 from rag.types import (
     NAMESPACE_RAG,
     ChunkRow,
     DocumentRow,
+    FileType,
+    NormalizedDocument,
     ProcessingLogEntry,
     QdrantPayloadModel,
     RecordType,
@@ -28,7 +30,7 @@ if TYPE_CHECKING:
     from rag.config import AppConfig
     from rag.db.models import SqliteMetadataDB
     from rag.pipeline.dedup import DedupChecker
-    from rag.protocols import Embedder, Parser, VectorStore
+    from rag.protocols import Embedder, Parser, Summarizer, VectorStore
     from rag.types import FileEvent
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,7 @@ class PipelineRunner:
         parsers: list[Parser],
         dedup: DedupChecker,
         config: AppConfig,
+        summarizer: Summarizer | None = None,
     ) -> None:
         self._db = db
         self._vector_store = vector_store
@@ -57,6 +60,7 @@ class PipelineRunner:
         self._parsers = parsers
         self._dedup = dedup
         self._config = config
+        self._summarizer = summarizer
 
     def process_file(self, event: FileEvent) -> bool:
         """Process a single file through the full pipeline. Returns True on success."""
@@ -238,6 +242,21 @@ class PipelineRunner:
                 keep_ids = {p.point_id for p in points}
                 self._vector_store.delete_stale_points(doc_id, keep_ids)
 
+            # 12. Summarize (if enabled)
+            summary_points = self._summarize_document(
+                doc_id=doc_id,
+                title=parsed_doc.title or path.stem,
+                file_path=file_path,
+                folder_path=folder_path,
+                folder_ancestors=folder_ancestors,
+                file_type=event.file_type,
+                modified_at=event.modified_at,
+                normalized=normalized,
+                section_rows=section_rows,
+            )
+            if summary_points:
+                self._vector_store.upsert_points(doc_id, summary_points)
+
             self._update_sync_status(file_path, "done")
             self._log(doc_id, file_path, "pipeline", "success", start, f"{len(chunks)} chunks")
             return True
@@ -264,6 +283,131 @@ class PipelineRunner:
             else:
                 errors += 1
         return success, errors
+
+    def _summarize_document(
+        self,
+        doc_id: str,
+        title: str,
+        file_path: str,
+        folder_path: str,
+        folder_ancestors: list[str],
+        file_type: FileType,
+        modified_at: str,
+        normalized: NormalizedDocument,
+        section_rows: list[SectionRow],
+    ) -> list[VectorPoint]:
+        """Run summarization and create summary vector points. Returns summary points."""
+        if self._summarizer is None or not self._summarizer.available:
+            return []
+
+        summary_points: list[VectorPoint] = []
+        full_text = "\n\n".join(s.text for s in normalized.sections)
+
+        # Document-level summary
+        doc_result = self._summarizer.summarize_document(
+            full_text, title, normalized.file_type.value
+        )
+        if isinstance(doc_result, SummarySuccess):
+            # Update document row with summaries
+            existing_doc = self._db.get_document(doc_id)
+            if existing_doc is not None:
+                updated = existing_doc.model_copy(
+                    update={
+                        "summary_l1": doc_result.summary_l1,
+                        "summary_l2": doc_result.summary_l2,
+                        "summary_l3": doc_result.summary_l3,
+                        "key_topics": doc_result.key_topics,
+                        "doc_type_guess": doc_result.doc_type_guess,
+                        "summary_content_hash": normalized.normalized_content_hash,
+                    }
+                )
+                self._db.upsert_document(updated)
+
+            # Create document_summary vector point
+            summary_text = doc_result.summary_l3
+            vectors = self._embedder.embed_batch([summary_text])
+            point_id = str(uuid.uuid5(NAMESPACE_RAG, f"{doc_id}:document_summary"))
+            summary_points.append(
+                VectorPoint(
+                    point_id=point_id,
+                    vector=vectors[0],
+                    payload=QdrantPayloadModel(
+                        record_type=RecordType.DOCUMENT_SUMMARY,
+                        summary_level="l3",
+                        doc_id=doc_id,
+                        title=title,
+                        file_path=file_path,
+                        folder_path=folder_path,
+                        folder_ancestors=folder_ancestors,
+                        file_type=file_type,
+                        modified_at=modified_at,
+                        doc_type_guess=doc_result.doc_type_guess,
+                        text=summary_text,
+                    ),
+                )
+            )
+            logger.info("Generated document summary for %s", file_path)
+        else:
+            logger.warning("Document summarization failed for %s: %s", file_path, doc_result.error)
+
+        # Section-level summaries
+        doc_context = f"{title} ({normalized.file_type.value})"
+        for section, section_row in zip(normalized.sections, section_rows, strict=False):
+            if not section.text.strip():
+                continue
+
+            sec_result = self._summarizer.summarize_section(
+                section.text, section.heading, doc_context
+            )
+            if isinstance(sec_result, SectionSummarySuccess):
+                # Update section row with summary
+                updated_section = section_row.model_copy(
+                    update={
+                        "section_summary": sec_result.section_summary,
+                        "section_summary_l2": sec_result.section_summary_l2,
+                        "embedding_model_version": self._embedder.model_version,
+                    }
+                )
+                self._db.insert_sections([updated_section])
+
+                # Create section_summary vector point
+                sec_vectors = self._embedder.embed_batch([sec_result.section_summary])
+                sec_point_id = str(
+                    uuid.uuid5(NAMESPACE_RAG, f"{doc_id}:section_summary:{section.order}")
+                )
+                summary_points.append(
+                    VectorPoint(
+                        point_id=sec_point_id,
+                        vector=sec_vectors[0],
+                        payload=QdrantPayloadModel(
+                            record_type=RecordType.SECTION_SUMMARY,
+                            doc_id=doc_id,
+                            section_id=section_row.section_id,
+                            title=title,
+                            file_path=file_path,
+                            folder_path=folder_path,
+                            folder_ancestors=folder_ancestors,
+                            file_type=file_type,
+                            modified_at=modified_at,
+                            section_heading=section.heading,
+                            text=sec_result.section_summary,
+                        ),
+                    )
+                )
+                logger.info(
+                    "Generated section summary for %s section %d",
+                    file_path,
+                    section.order,
+                )
+            else:
+                logger.warning(
+                    "Section summarization failed for %s section %d: %s",
+                    file_path,
+                    section.order,
+                    sec_result.error,
+                )
+
+        return summary_points
 
     def _handle_deletion(self, event: FileEvent) -> None:
         """Mark file as deleted in sync_state and remove vectors from Qdrant."""

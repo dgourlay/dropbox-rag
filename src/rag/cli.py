@@ -30,6 +30,7 @@ def _init_components(
     from rag.pipeline.parser.docling_parser import DoclingParser
     from rag.pipeline.parser.text_parser import TextParser
     from rag.pipeline.runner import PipelineRunner
+    from rag.pipeline.summarizer import CliSummarizer
     from rag.retrieval.citations import CitationAssembler
     from rag.retrieval.engine import RetrievalEngine
     from rag.retrieval.reranker import OnnxReranker
@@ -46,6 +47,8 @@ def _init_components(
     citations = CitationAssembler(db)
     dedup = DedupChecker(conn)
 
+    summarizer = CliSummarizer(config.summarization)
+
     parser_list: list[DoclingParser | TextParser] = [DoclingParser(), TextParser()]
 
     runner = PipelineRunner(
@@ -55,6 +58,7 @@ def _init_components(
         parsers=list(parser_list),
         dedup=dedup,
         config=config,
+        summarizer=summarizer if summarizer.available else None,
     )
 
     engine = RetrievalEngine(

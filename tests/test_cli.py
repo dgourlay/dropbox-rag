@@ -195,6 +195,7 @@ class TestSearch:
             ),
             score=0.95,
             record_type="chunk",
+            doc_id="test-doc-id",
         )
 
         engine = MagicMock()

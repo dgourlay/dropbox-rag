@@ -151,6 +151,7 @@ class CitedEvidence(BaseModel):
     citation: Citation
     score: float
     record_type: str
+    doc_id: str
 
 
 class RetrievalResult(BaseModel):
@@ -286,6 +287,13 @@ class SearchDocumentsInput(BaseModel):
     date_filter: str | None = None
     top_k: int = 10
     debug: bool = False
+    format: Literal["text", "json"] = "text"
+
+
+class QuickSearchInput(BaseModel):
+    query: str
+    folder_filter: str | None = None
+    top_k: int = 5
 
 
 class SearchDocumentsOutput(BaseModel):

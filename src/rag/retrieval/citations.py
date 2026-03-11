@@ -65,6 +65,7 @@ class CitationAssembler:
                     citation=citation,
                     score=hit.score,
                     record_type=hit.record_type.value,
+                    doc_id=hit.doc_id,
                 )
             )
 
