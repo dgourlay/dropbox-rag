@@ -1,5 +1,5 @@
-# dropbox-rag configuration
-# Copy to ~/.config/dropbox-rag/config.toml and edit, or run `rag init`.
+# local-rag configuration
+# Copy to ~/.config/local-rag/config.toml and edit, or run `rag init`.
 
 [folders]
 # Required: directories to index (supports ~ for home)
@@ -10,7 +10,7 @@ paths = ["~/Documents", "~/Dropbox"]
 # All sections below are optional -- defaults shown as comments.
 
 # [database]
-# path = "~/.local/share/dropbox-rag/metadata.db"
+# path = "~/.local/share/local-rag/metadata.db"
 
 # [qdrant]
 # url = "http://localhost:6333"
@@ -20,10 +20,10 @@ paths = ["~/Documents", "~/Dropbox"]
 # model = "BAAI/bge-m3"
 # dimensions = 1024
 # batch_size = 32
-# cache_dir = "~/.cache/dropbox-rag/models"
+# cache_dir = "~/.cache/local-rag/models"
 
 # [reranker]
-# model_path = "~/.cache/dropbox-rag/models/bge-reranker-v2-m3"
+# model_path = "~/.cache/local-rag/models/bge-reranker-v2-m3"
 # top_k_candidates = 30
 # top_k_final = 10
 

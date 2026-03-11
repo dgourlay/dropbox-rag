@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def create_server(config: AppConfig) -> Server:
     """Create and configure the MCP server with all tools registered."""
-    server = Server("dropbox-rag")
+    server = Server("local-rag")
     register_tools(server, config)
     return server
 

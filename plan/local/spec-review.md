@@ -144,9 +144,9 @@ warn_required_dynamic_aliases = true
 ### 2.8 Config file precedence undefined
 
 **Spec ref:** SS4.1
-**Detail:** Spec says "`~/.config/dropbox-rag/config.toml` (or project-local `config.toml`)" but doesn't specify precedence, merge semantics, behavior when no config exists, or required vs optional fields.
+**Detail:** Spec says "`~/.config/local-rag/config.toml` (or project-local `config.toml`)" but doesn't specify precedence, merge semantics, behavior when no config exists, or required vs optional fields.
 **Severity:** Nice-to-have
-**Fix:** Define: `RAG_CONFIG_PATH` env > `./config.toml` > `~/.config/dropbox-rag/config.toml`. Deep merge with more-specific winning. `folders.paths` is the only required field. If no config found, print setup instructions.
+**Fix:** Define: `RAG_CONFIG_PATH` env > `./config.toml` > `~/.config/local-rag/config.toml`. Deep merge with more-specific winning. `folders.paths` is the only required field. If no config found, print setup instructions.
 
 ### 2.9 UUID5 deterministic IDs under-specified
 

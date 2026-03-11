@@ -92,17 +92,17 @@ def _shorten_path(path: str) -> str:
 
 
 def _check_mcp_config(path: Path) -> bool:
-    """Check if a config file has dropbox-rag in its mcpServers."""
+    """Check if a config file has local-rag in its mcpServers."""
     try:
         data = json.loads(path.read_text())
         servers = data.get("mcpServers", {})
-        return "dropbox-rag" in servers
+        return "local-rag" in servers
     except Exception:
         return False
 
 
 def _detect_mcp_clients() -> list[str]:
-    """Detect which LLM clients have dropbox-rag MCP configured."""
+    """Detect which LLM clients have local-rag MCP configured."""
     desktop_path = "~/Library/Application Support/Claude/claude_desktop_config.json"
     checks: list[tuple[str, Path]] = [
         ("Claude Code", Path("~/.claude.json").expanduser()),

@@ -91,7 +91,7 @@ def init(add_folder: str | None, set_llm: str | None) -> None:
         detect_llm_cli,
     )
 
-    config_path = Path("~/.config/dropbox-rag/config.toml").expanduser()
+    config_path = Path("~/.config/local-rag/config.toml").expanduser()
 
     if add_folder is not None or set_llm is not None:
         # Non-interactive mode

@@ -4,7 +4,7 @@
 
 This is the build specification for a local, laptop-hosted variant of the Dropbox RAG system. It indexes documents from configured local folders, builds a searchable vector index with multi-level summaries, and exposes retrieval to local LLM tools (Claude Desktop, Claude Code, etc.) via a local MCP server. No cloud infrastructure required — everything runs on the developer's machine.
 
-This spec is the local counterpart to `plan/cloud/dropbox-rag-final-spec.md`. The core pipeline logic (classify → parse → normalize → dedup → chunk → embed → index) and retrieval engine (hybrid search + RRF + reranker) are shared designs. The differences are in infrastructure, deployment, and model choices.
+This spec is the local counterpart to `plan/cloud/local-rag-final-spec.md`. The core pipeline logic (classify → parse → normalize → dedup → chunk → embed → index) and retrieval engine (hybrid search + RRF + reranker) are shared designs. The differences are in infrastructure, deployment, and model choices.
 
 ---
 
@@ -378,7 +378,7 @@ Configured local folders
 
 ### 4.1 Config File
 
-Single TOML config file at `~/.config/dropbox-rag/config.toml` (or project-local `config.toml`):
+Single TOML config file at `~/.config/local-rag/config.toml` (or project-local `config.toml`):
 
 ```toml
 [folders]
@@ -395,7 +395,7 @@ ignore = ["**/node_modules", "**/.git", "**/venv", "**/__pycache__"]
 
 [database]
 # SQLite database location
-path = "~/.local/share/dropbox-rag/metadata.db"
+path = "~/.local/share/local-rag/metadata.db"
 
 [qdrant]
 # Qdrant connection
@@ -408,11 +408,11 @@ model = "BAAI/bge-m3"
 dimensions = 1024
 batch_size = 32
 # Cache directory for downloaded model weights
-cache_dir = "~/.cache/dropbox-rag/models"
+cache_dir = "~/.cache/local-rag/models"
 
 [reranker]
 # ONNX reranker
-model_path = "~/.cache/dropbox-rag/models/bge-reranker-v2-m3"
+model_path = "~/.cache/local-rag/models/bge-reranker-v2-m3"
 top_k_candidates = 30
 top_k_final = 10
 
@@ -457,7 +457,7 @@ RAG_CONFIG_PATH=/path/to/config.toml
 
 1. `RAG_CONFIG_PATH` environment variable (highest priority)
 2. Project-local `./config.toml`
-3. User-global `~/.config/dropbox-rag/config.toml`
+3. User-global `~/.config/local-rag/config.toml`
 
 Deep merge: more-specific config overrides per key. `folders.paths` is the only required field; all other sections have sensible defaults. If no config file is found, print a clear error with setup instructions.
 
@@ -475,10 +475,10 @@ class EmbeddingConfig(BaseModel):
     model: str = "BAAI/bge-m3"
     dimensions: int = 1024  # must match model
     batch_size: int = 32
-    cache_dir: Path = Path("~/.cache/dropbox-rag/models")
+    cache_dir: Path = Path("~/.cache/local-rag/models")
 
 class RerankerConfig(BaseModel):
-    model_path: Path = Path("~/.cache/dropbox-rag/models/bge-reranker-v2-m3")
+    model_path: Path = Path("~/.cache/local-rag/models/bge-reranker-v2-m3")
     top_k_candidates: int = 30
     top_k_final: int = 10  # validated: must be <= top_k_candidates
 
@@ -810,7 +810,7 @@ Same as cloud:
 ## 9. Project Structure
 
 ```
-dropbox-rag-local/
+local-rag-local/
 ├── pyproject.toml                  # Package definition, dependencies, CLI entry points
 ├── config.example.toml             # Example configuration
 ├── Makefile                        # Common commands (setup, index, serve, test)
@@ -900,7 +900,7 @@ dropbox-rag-local/
 
 ```bash
 # 1. Install
-pipx install dropbox-rag          # or: pip install dropbox-rag
+pipx install local-rag          # or: pip install local-rag
 
 # 2. Interactive setup — configures folders, LLM CLI, Qdrant, MCP integration
 rag init
@@ -943,12 +943,12 @@ Downloading models
   bge-reranker-v2-m3 ONNX... done
 
 MCP Integration
-  Claude Desktop config found. Add dropbox-rag MCP server? [Y/n]: y
+  Claude Desktop config found. Add local-rag MCP server? [Y/n]: y
   → Updated ~/Library/Application Support/Claude/claude_desktop_config.json ✓
-  Claude Code config found. Add dropbox-rag MCP server? [Y/n]: y
+  Claude Code config found. Add local-rag MCP server? [Y/n]: y
   → Updated ~/.claude/mcp.json ✓
 
-Config written to ~/.config/dropbox-rag/config.toml
+Config written to ~/.config/local-rag/config.toml
 
 Ready! Run `rag index` to index your documents.
 ```
@@ -958,10 +958,10 @@ Ready! Run `rag index` to index your documents.
 1. **Folder selection** — prompts for folder paths with `~` expansion and validation (checks path exists). Supports multiple folders. Writes to `folders.paths` in config.
 2. **File type defaults** — defaults to `[pdf, docx, txt, md]` with option to customize. Writes to `folders.extensions`.
 3. **LLM CLI auto-detection** — runs `which` for known CLI tools (`claude`, `kiro`, `codex`). If found, offers to configure. If none found, disables summarization (graceful degradation). Writes to `summarization.*`.
-4. **Qdrant management** — checks if Docker is available and if a Qdrant container is already running. If not, pulls `qdrant/qdrant:v1.17` and starts it with a persistent volume at `~/.local/share/dropbox-rag/qdrant`. Creates the collection with correct schema (1024-dim cosine, all payload indices, text index).
-5. **Model download** — downloads BGE-M3 embedding model and bge-reranker-v2-m3 ONNX weights to `~/.cache/dropbox-rag/models`. Shows progress.
-6. **MCP auto-config** — detects Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS) and Claude Code config (`~/.claude/mcp.json`). Offers to add the `dropbox-rag` MCP server entry. Non-destructive: reads existing config, merges, writes back. User can skip with `n`.
-7. **Config file** — writes `~/.config/dropbox-rag/config.toml` with all settings. If config already exists, offers to update or keep existing.
+4. **Qdrant management** — checks if Docker is available and if a Qdrant container is already running. If not, pulls `qdrant/qdrant:v1.17` and starts it with a persistent volume at `~/.local/share/local-rag/qdrant`. Creates the collection with correct schema (1024-dim cosine, all payload indices, text index).
+5. **Model download** — downloads BGE-M3 embedding model and bge-reranker-v2-m3 ONNX weights to `~/.cache/local-rag/models`. Shows progress.
+6. **MCP auto-config** — detects Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS) and Claude Code config (`~/.claude/mcp.json`). Offers to add the `local-rag` MCP server entry. Non-destructive: reads existing config, merges, writes back. User can skip with `n`.
+7. **Config file** — writes `~/.config/local-rag/config.toml` with all settings. If config already exists, offers to update or keep existing.
 
 **Re-running `rag init`** is safe — it detects existing config and offers to update individual sections. Useful for adding folders or changing the LLM CLI tool.
 
@@ -971,16 +971,16 @@ For users who prefer manual configuration:
 
 ```bash
 # Install
-pip install dropbox-rag
+pip install local-rag
 
 # Start Qdrant manually
 docker run -d --name qdrant -p 6333:6333 \
-  -v ~/.local/share/dropbox-rag/qdrant:/qdrant/storage \
+  -v ~/.local/share/local-rag/qdrant:/qdrant/storage \
   qdrant/qdrant:v1.17
 
 # Create config manually
-mkdir -p ~/.config/dropbox-rag
-cp config.example.toml ~/.config/dropbox-rag/config.toml
+mkdir -p ~/.config/local-rag
+cp config.example.toml ~/.config/local-rag/config.toml
 # Edit config.toml to add your folder paths
 
 # Index
@@ -1013,7 +1013,7 @@ rag mcp-config --install claude-code
 ```json
 {
   "mcpServers": {
-    "dropbox-rag": {
+    "local-rag": {
       "command": "rag",
       "args": ["serve"],
       "env": {}
@@ -1026,7 +1026,7 @@ rag mcp-config --install claude-code
 ```json
 {
   "mcpServers": {
-    "dropbox-rag": {
+    "local-rag": {
       "command": "rag",
       "args": ["serve"]
     }

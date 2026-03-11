@@ -158,7 +158,7 @@ Agents within the same window can run concurrently. Each window must complete be
 
 **Acceptance criteria:**
 - `AppConfig` model with all nested sections: `FoldersConfig`, `DatabaseConfig`, `QdrantConfig`, `EmbeddingConfig`, `RerankerConfig`, `SummarizationConfig`, `MCPConfig`, `WatcherConfig`
-- `load_config()` function implements precedence: `RAG_CONFIG_PATH` > `./config.toml` > `~/.config/dropbox-rag/config.toml`
+- `load_config()` function implements precedence: `RAG_CONFIG_PATH` > `./config.toml` > `~/.config/local-rag/config.toml`
 - Path expansion (`~` → home dir) on all path fields
 - `folders.paths` validated as existing directories (with clear error if not)
 - `reranker.top_k_final <= reranker.top_k_candidates` validated
@@ -819,7 +819,7 @@ test_cli_search:
 
 test_cli_mcp_config_print:
   - Run rag mcp-config --print
-  - Assert: outputs valid JSON with mcpServers.dropbox-rag entry
+  - Assert: outputs valid JSON with mcpServers.local-rag entry
 ```
 
 #### `test_dedup.py` — Does deduplication work?

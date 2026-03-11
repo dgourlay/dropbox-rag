@@ -9,7 +9,7 @@ Local RAG system that indexes documents from configured filesystem folders, buil
 - Spec: `plan/local/local-rag-spec.md`
 - Agent team plan: `plan/local/agent-team-plan.md`
 - Spec review: `plan/local/spec-review.md`
-- Cloud variant (future): `plan/cloud/dropbox-rag-final-spec.md`
+- Cloud variant (future): `plan/cloud/local-rag-final-spec.md`
 
 ## Architecture
 
@@ -86,7 +86,7 @@ rag mcp-config --print            # Print MCP config JSON snippet
 - UUIDs stored as TEXT in SQLite
 - All timestamps ISO 8601
 - SQLite: WAL mode, busy_timeout=30000
-- Config file: TOML at `~/.config/dropbox-rag/config.toml`
+- Config file: TOML at `~/.config/local-rag/config.toml`
 - Docling parsing runs in child subprocess (multiprocessing) for memory isolation
 - MCP stdio servers: never write to stdout (corrupts JSON-RPC); use stderr for logging
 - SQLite: `check_same_thread=False` for async MCP handler access

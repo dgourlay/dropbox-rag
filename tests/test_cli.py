@@ -52,7 +52,7 @@ class TestMcpConfig:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert "mcpServers" in data
-        assert "dropbox-rag" in data["mcpServers"]
+        assert "local-rag" in data["mcpServers"]
 
     def test_no_flags(self, runner: CliRunner) -> None:
         result = runner.invoke(main, ["mcp-config"])
@@ -264,7 +264,7 @@ class TestInitModule:
 
         config = generate_mcp_config()
         assert "mcpServers" in config
-        assert "dropbox-rag" in config["mcpServers"]  # type: ignore[operator]
+        assert "local-rag" in config["mcpServers"]  # type: ignore[operator]
 
     def test_generate_mcp_config_http(self) -> None:
         from rag.init import generate_mcp_config
@@ -272,7 +272,7 @@ class TestInitModule:
         config = generate_mcp_config(transport="http")
         servers = config["mcpServers"]
         assert isinstance(servers, dict)
-        assert "--http" in servers["dropbox-rag"]["args"]  # type: ignore[index]
+        assert "--http" in servers["local-rag"]["args"]  # type: ignore[index]
 
     def test_create_config(self, tmp_path: Path) -> None:
         from rag.init import create_config

@@ -151,7 +151,7 @@ class TestToolRegistration:
         """create_server returns a configured Server."""
         config = _make_config()
         server = create_server(config)
-        assert server.name == "dropbox-rag"
+        assert server.name == "local-rag"
 
 
 # --- search_documents Tests ---

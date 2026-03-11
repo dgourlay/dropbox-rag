@@ -22,7 +22,7 @@ class FoldersConfig(BaseModel):
 
 
 class DatabaseConfig(BaseModel):
-    path: Path = Path("~/.local/share/dropbox-rag/metadata.db")
+    path: Path = Path("~/.local/share/local-rag/metadata.db")
 
     @model_validator(mode="after")
     def expand_paths(self) -> DatabaseConfig:
@@ -39,7 +39,7 @@ class EmbeddingConfig(BaseModel):
     model: str = "BAAI/bge-m3"
     dimensions: int = 1024
     batch_size: int = 32
-    cache_dir: Path = Path("~/.cache/dropbox-rag/models")
+    cache_dir: Path = Path("~/.cache/local-rag/models")
 
     @model_validator(mode="after")
     def expand_paths(self) -> EmbeddingConfig:
@@ -48,7 +48,7 @@ class EmbeddingConfig(BaseModel):
 
 
 class RerankerConfig(BaseModel):
-    model_path: Path = Path("~/.cache/dropbox-rag/models/bge-reranker-v2-m3")
+    model_path: Path = Path("~/.cache/local-rag/models/bge-reranker-v2-m3")
     top_k_candidates: int = 30
     top_k_final: int = 10
 
@@ -100,7 +100,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     """Load config from TOML file.
 
     Precedence: explicit path > RAG_CONFIG_PATH env > ./config.toml
-    > ~/.config/dropbox-rag/config.toml.
+    > ~/.config/local-rag/config.toml.
     """
     path: Path
     if config_path is not None:
@@ -109,14 +109,14 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         path = Path(env_path).expanduser().resolve()
     elif Path("config.toml").exists():
         path = Path("config.toml").resolve()
-    elif Path("~/.config/dropbox-rag/config.toml").expanduser().exists():
-        path = Path("~/.config/dropbox-rag/config.toml").expanduser().resolve()
+    elif Path("~/.config/local-rag/config.toml").expanduser().exists():
+        path = Path("~/.config/local-rag/config.toml").expanduser().resolve()
     else:
         msg = (
             "No config file found. Searched:\n"
             "  1. RAG_CONFIG_PATH environment variable\n"
             "  2. ./config.toml\n"
-            "  3. ~/.config/dropbox-rag/config.toml\n\n"
+            "  3. ~/.config/local-rag/config.toml\n\n"
             "Run 'rag init' to create a config file."
         )
         raise FileNotFoundError(msg)

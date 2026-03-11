@@ -1,4 +1,4 @@
-# dropbox-rag
+# local-rag
 
 A local RAG system that indexes documents from filesystem folders, builds a
 hybrid search index (dense vectors + keyword), and exposes retrieval via MCP to
@@ -29,8 +29,8 @@ process plus a Qdrant Docker container. No cloud infrastructure required.
 
 ```bash
 # 1. Clone and install
-git clone git@github.com:dgourlay/dropbox-rag.git
-cd dropbox-rag
+git clone git@github.com:dgourlay/local-rag.git
+cd local-rag
 make setup           # creates venv, installs deps, starts Qdrant
 
 # 2. Activate venv and configure
@@ -70,8 +70,8 @@ rag mcp-config --install claude-code
 ```json
 {
   "mcpServers": {
-    "dropbox-rag": {
-      "command": "/path/to/dropbox-rag/.venv/bin/python",
+    "local-rag": {
+      "command": "/path/to/local-rag/.venv/bin/python",
       "args": ["-m", "rag.cli", "serve"]
     }
   }
@@ -99,8 +99,8 @@ Servers, and add:
 
 ```json
 {
-  "dropbox-rag": {
-    "command": "/path/to/dropbox-rag/.venv/bin/python",
+  "local-rag": {
+    "command": "/path/to/local-rag/.venv/bin/python",
     "args": ["-m", "rag.cli", "serve"]
   }
 }
@@ -124,8 +124,8 @@ config, use Option B with `.kiro/settings/mcp.json` in your project root.
 ```json
 {
   "mcpServers": {
-    "dropbox-rag": {
-      "command": "/path/to/dropbox-rag/.venv/bin/python",
+    "local-rag": {
+      "command": "/path/to/local-rag/.venv/bin/python",
       "args": ["-m", "rag.cli", "serve"]
     }
   }
@@ -136,9 +136,9 @@ config, use Option B with `.kiro/settings/mcp.json` in your project root.
 
 ```bash
 kiro-cli mcp add \
-  --name "dropbox-rag" \
+  --name "local-rag" \
   --scope global \
-  --command "/path/to/dropbox-rag/.venv/bin/python" \
+  --command "/path/to/local-rag/.venv/bin/python" \
   --args "-m rag.cli serve"
 ```
 
@@ -191,7 +191,7 @@ Config is TOML, resolved in this order (first match wins):
 
 1. `RAG_CONFIG_PATH` environment variable
 2. `./config.toml` in the current directory
-3. `~/.config/dropbox-rag/config.toml` (default, created by `rag init`)
+3. `~/.config/local-rag/config.toml` (default, created by `rag init`)
 
 Only `[folders].paths` is required. Everything else has sensible defaults.
 See [config.example.toml](config.example.toml) for all options with defaults.
@@ -212,7 +212,7 @@ extensions = ["pdf", "docx", "txt", "md"]
 ignore = ["**/node_modules", "**/.git", "**/venv", "**/__pycache__"]
 
 [database]
-path = "~/.local/share/dropbox-rag/metadata.db"
+path = "~/.local/share/local-rag/metadata.db"
 
 [qdrant]
 url = "http://localhost:6333"
@@ -222,10 +222,10 @@ collection = "documents"
 model = "BAAI/bge-m3"
 dimensions = 1024
 batch_size = 32
-cache_dir = "~/.cache/dropbox-rag/models"
+cache_dir = "~/.cache/local-rag/models"
 
 [reranker]
-model_path = "~/.cache/dropbox-rag/models/bge-reranker-v2-m3"
+model_path = "~/.cache/local-rag/models/bge-reranker-v2-m3"
 top_k_candidates = 30
 top_k_final = 10
 
@@ -291,13 +291,13 @@ make format     # auto-format with ruff
 ## Troubleshooting
 
 **"No config file found"** -- Run `rag init`, or copy `config.example.toml` to
-`~/.config/dropbox-rag/config.toml` and edit it.
+`~/.config/local-rag/config.toml` and edit it.
 
 **Qdrant connection refused** -- Ensure Qdrant is running: `docker compose up -d`
 
 **Model download fails** -- Check internet. Clear cache and retry:
 ```bash
-rm -rf ~/.cache/dropbox-rag/models/
+rm -rf ~/.cache/local-rag/models/
 rag index              # re-downloads everything
 ```
 

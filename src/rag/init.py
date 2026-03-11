@@ -42,7 +42,7 @@ def create_config(
 ) -> Path:
     """Create config.toml with the given settings."""
     if config_path is None:
-        config_path = Path("~/.config/dropbox-rag/config.toml").expanduser()
+        config_path = Path("~/.config/local-rag/config.toml").expanduser()
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -75,7 +75,7 @@ def generate_mcp_config(transport: str = "stdio") -> dict[str, object]:
     if transport == "stdio":
         return {
             "mcpServers": {
-                "dropbox-rag": {
+                "local-rag": {
                     "command": python_path,
                     "args": ["-m", "rag.cli", "serve"],
                 }
@@ -83,7 +83,7 @@ def generate_mcp_config(transport: str = "stdio") -> dict[str, object]:
         }
     return {
         "mcpServers": {
-            "dropbox-rag": {
+            "local-rag": {
                 "command": python_path,
                 "args": ["-m", "rag.cli", "serve", "--http"],
             }

@@ -68,7 +68,7 @@ const components = {
       config: [
         "Extensions: .pdf, .docx, .txt, .md (configurable)",
         "Ignore patterns: node_modules, .git, venv, __pycache__",
-        "Config: ~/.config/dropbox-rag/config.toml",
+        "Config: ~/.config/local-rag/config.toml",
         "Watcher: configurable poll interval and debounce",
       ],
       tech: "Python 3.11+ · watchdog · SHA-256 · TOML config",
@@ -227,7 +227,7 @@ const components = {
         "processing_log: stage timing, error tracking, audit trail",
       ],
       config: [
-        "Path: ~/.local/share/dropbox-rag/metadata.db",
+        "Path: ~/.local/share/local-rag/metadata.db",
         "WAL mode, busy_timeout=30000ms",
         "check_same_thread=False for MCP async access",
         "Migration system: versioned SQL schema files",
@@ -523,7 +523,7 @@ window.__App = function App() {
                 Your documents, searchable by AI — entirely local.
               </div>
               <div style={{ color: C.muted, fontSize: 13, lineHeight: 1.6, maxWidth: 720 }}>
-                dropbox-rag indexes your local documents (PDF, DOCX, TXT, MD), builds a
+                local-rag indexes your local documents (PDF, DOCX, TXT, MD), builds a
                 hybrid search index with dense vectors and keyword search, and exposes
                 retrieval as MCP tools — so Claude Desktop, Claude Code, and Kiro can
                 search your files as naturally as browsing the web. No cloud. No API keys
@@ -531,7 +531,7 @@ window.__App = function App() {
               </div>
               <div style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
                 <a
-                  href="https://github.com/dgourlay/dropbox-rag"
+                  href="https://github.com/dgourlay/local-rag"
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{
@@ -601,8 +601,8 @@ window.__App = function App() {
                   overflowX: "auto",
                 }}
               >
-{`git clone git@github.com:dgourlay/dropbox-rag.git
-cd dropbox-rag
+{`git clone git@github.com:dgourlay/local-rag.git
+cd local-rag
 make setup              # creates venv, installs deps, starts Qdrant
 source .venv/bin/activate
 rag init                # interactive wizard: pick folders, detect LLM CLI
@@ -700,7 +700,7 @@ rag search "your query" # test it from the terminal`}
                 </div>
               </div>
               <div style={{ color: C.text, fontSize: 12, lineHeight: 1.6, marginBottom: 14 }}>
-                dropbox-rag runs as an MCP tool server. Once connected, Claude can search your
+                local-rag runs as an MCP tool server. Once connected, Claude can search your
                 documents, get document summaries, expand context around results, and check
                 indexing health — all through natural conversation. No manual copy-paste, no
                 file uploads, no context window limits.
@@ -1621,7 +1621,7 @@ rag search "your query" # test it from the terminal`}
                   whiteSpace: "pre",
                 }}
               >
-{`# ~/.config/dropbox-rag/config.toml
+{`# ~/.config/local-rag/config.toml
 
 [folders]
 paths = ["/Users/me/Documents/work"]
