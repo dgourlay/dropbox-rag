@@ -119,6 +119,14 @@ class PipelineRunner:
                 normalized.raw_content_hash, normalized.normalized_content_hash
             )
             if canonical is not None:
+                # Check if this is the same file unchanged (skip entirely)
+                existing_doc = self._db.get_document_by_path(file_path)
+                if existing_doc is not None and existing_doc.doc_id == canonical:
+                    self._update_sync_status(file_path, "done")
+                    self._log(canonical, file_path, "dedup", "unchanged", start, "skipped")
+                    return True
+
+                # Different file with same content — record as duplicate
                 doc_id = str(uuid.uuid4())
                 self._db.upsert_document(
                     DocumentRow(

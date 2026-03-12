@@ -131,6 +131,14 @@ class SqliteMetadataDB:
             return None
         return _row_to_document(row)
 
+    def get_document_by_path(self, file_path: str) -> DocumentRow | None:
+        row = self._conn.execute(
+            "SELECT * FROM documents WHERE file_path = ?", (file_path,)
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_document(row)
+
     def get_document_by_hash(self, content_hash: str) -> DocumentRow | None:
         row = self._conn.execute(
             "SELECT * FROM documents WHERE normalized_content_hash = ?",
