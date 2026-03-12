@@ -29,7 +29,7 @@ process plus a Qdrant Docker container. No cloud infrastructure required.
 
 ```bash
 # 1. Clone and install
-git clone git@github.com:dgourlay/local-rag.git
+git clone https://github.com/dgourlay/local-rag.git
 cd local-rag
 make setup           # creates venv, installs deps, starts Qdrant
 

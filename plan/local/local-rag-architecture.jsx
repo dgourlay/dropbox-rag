@@ -580,7 +580,7 @@ export default function App() {
                   overflowX: "auto",
                 }}
               >
-{`git clone git@github.com:dgourlay/local-rag.git
+{`git clone https://github.com/dgourlay/local-rag.git
 cd local-rag
 make setup              # creates venv, installs deps, starts Qdrant
 source .venv/bin/activate
