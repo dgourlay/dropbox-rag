@@ -239,20 +239,20 @@ class TestInit:
 
 
 class TestInitModule:
-    def test_detect_llm_cli_found(self) -> None:
-        from rag.init import detect_llm_cli
+    def test_detect_llm_clis_found(self) -> None:
+        from rag.init import detect_llm_clis
 
         def _which(x: str) -> str | None:
-            return "/usr/bin/claude" if x == "claude" else None
+            return "/usr/bin/" + x if x in ("claude", "kiro-cli") else None
 
         with patch("shutil.which", side_effect=_which):
-            assert detect_llm_cli() == "claude"
+            assert detect_llm_clis() == ["claude", "kiro-cli"]
 
-    def test_detect_llm_cli_not_found(self) -> None:
-        from rag.init import detect_llm_cli
+    def test_detect_llm_clis_not_found(self) -> None:
+        from rag.init import detect_llm_clis
 
         with patch("shutil.which", return_value=None):
-            assert detect_llm_cli() is None
+            assert detect_llm_clis() == []
 
     def test_check_qdrant_running_down(self) -> None:
         from rag.init import check_qdrant_running

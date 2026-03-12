@@ -88,7 +88,7 @@ def init(add_folder: str | None, set_llm: str | None) -> None:
         check_docker_available,
         check_qdrant_running,
         create_config,
-        detect_llm_cli,
+        detect_llm_clis,
     )
 
     config_path = Path("~/.config/local-rag/config.toml").expanduser()
@@ -162,14 +162,30 @@ def init(add_folder: str | None, set_llm: str | None) -> None:
         click.echo(f"    Using defaults: {default_ext_str}")
 
     # 3. LLM CLI
-    detected = detect_llm_cli()
+    detected = detect_llm_clis()
+    llm: str | None = None
     if detected:
-        click.echo(f"\nDetected LLM CLI: {detected}")
-        use_detected = click.confirm(f"Use '{detected}' for summarization?", default=True)
-        llm = detected if use_detected else None
-    else:
+        click.echo(f"\nDetected LLM CLI tools: {', '.join(detected)}")
+        if len(detected) == 1:
+            use_it = click.confirm(f"Use '{detected[0]}' for summarization?", default=True)
+            if use_it:
+                llm = detected[0]
+        else:
+            choices = {str(i + 1): tool for i, tool in enumerate(detected)}
+            for num, tool in choices.items():
+                click.echo(f"  {num}. {tool}")
+            click.echo(f"  {len(detected) + 1}. Enter custom command")
+            click.echo(f"  {len(detected) + 2}. Skip (no summarization)")
+            choice = click.prompt("Select LLM CLI", default="1")
+            if choice in choices:
+                llm = choices[choice]
+            elif choice == str(len(detected) + 1):
+                llm = click.prompt("Enter LLM CLI command")
+            # else: skip
+    if llm is None and not detected:
         click.echo("\nNo LLM CLI tool detected (checked: claude, kiro-cli, codex).")
-        llm = None
+        custom = click.prompt("Enter LLM CLI command (or press Enter to skip)", default="")
+        llm = custom if custom else None
 
     # 4. Docker / Qdrant
     click.echo()

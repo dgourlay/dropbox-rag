@@ -7,12 +7,9 @@ import urllib.request
 from pathlib import Path
 
 
-def detect_llm_cli() -> str | None:
-    """Auto-detect available LLM CLI tool."""
-    for tool in ["claude", "kiro-cli", "codex"]:
-        if shutil.which(tool):
-            return tool
-    return None
+def detect_llm_clis() -> list[str]:
+    """Auto-detect all available LLM CLI tools."""
+    return [tool for tool in ["claude", "kiro-cli", "codex"] if shutil.which(tool)]
 
 
 def check_docker_available() -> bool:
