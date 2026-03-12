@@ -421,7 +421,7 @@ function Detail({ comp }) {
   );
 }
 
-export default function App() {
+window.__App = function App() {
   const [sel, setSel] = useState(null);
   const [tab, setTab] = useState("overview");
   const [expandedTool, setExpandedTool] = useState(null);
