@@ -19,7 +19,17 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script type="text/babel">
-    const { useState } = React;
+    const { useState, useEffect } = React;
+
+    function useIsMobile(breakpoint = 640) {
+      const [mobile, setMobile] = useState(window.innerWidth < breakpoint);
+      useEffect(() => {
+        const handler = () => setMobile(window.innerWidth < breakpoint);
+        window.addEventListener("resize", handler);
+        return () => window.removeEventListener("resize", handler);
+      }, [breakpoint]);
+      return mobile;
+    }
 
 
 const C = {
@@ -384,7 +394,7 @@ function Detail({ comp }) {
       <div style={{ color: C.text, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
         {d.purpose}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: 14 }}>
         {[
           ["How it works", d.how],
           ["Configuration", d.config],
@@ -429,6 +439,7 @@ window.__App = function App() {
   const [tab, setTab] = useState("overview");
   const [expandedTool, setExpandedTool] = useState(null);
   const [expandedCmd, setExpandedCmd] = useState(null);
+  const mobile = useIsMobile();
 
   const tabs = [
     { id: "overview", label: "Overview" },
@@ -447,7 +458,7 @@ window.__App = function App() {
         color: C.text,
         minHeight: "100vh",
         fontFamily: "'Inter', -apple-system, sans-serif",
-        padding: "20px 24px",
+        padding: mobile ? "12px 10px" : "20px 24px",
       }}
     >
       <div style={{ maxWidth: 920, margin: "0 auto" }}>
@@ -478,12 +489,13 @@ window.__App = function App() {
         <div
           style={{
             display: "flex",
+            flexWrap: "wrap",
             gap: 2,
             marginBottom: 20,
             background: C.surface,
             borderRadius: 8,
             padding: 3,
-            width: "fit-content",
+            width: mobile ? "100%" : "fit-content",
           }}
         >
           {tabs.map((t) => (
@@ -520,11 +532,11 @@ window.__App = function App() {
                 background: `linear-gradient(135deg, ${C.accentDim}, ${C.surface})`,
                 border: `1px solid ${C.borderActive}`,
                 borderRadius: 12,
-                padding: "28px 28px 24px",
+                padding: mobile ? "18px 14px 16px" : "28px 28px 24px",
                 marginBottom: 16,
               }}
             >
-              <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 6 }}>
+              <div style={{ fontSize: mobile ? 16 : 20, fontWeight: 800, color: C.text, marginBottom: 6 }}>
                 Your documents, searchable by AI.
               </div>
               <div style={{ color: C.muted, fontSize: 13, lineHeight: 1.6, maxWidth: 720 }}>
@@ -601,7 +613,7 @@ window.__App = function App() {
                   background: C.bg,
                   padding: 14,
                   borderRadius: 6,
-                  whiteSpace: "pre",
+                  whiteSpace: "pre", overflowX: "auto",
                   overflowX: "auto",
                 }}
               >
@@ -655,7 +667,7 @@ rag search "your query" # test it from the terminal`}
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1fr",
+                gridTemplateColumns: mobile ? "1fr" : "1fr 1fr",
                 gap: 12,
                 marginBottom: 16,
               }}
@@ -745,7 +757,7 @@ rag search "your query" # test it from the terminal`}
                 indexing health — all through natural conversation. No manual copy-paste, no
                 file uploads, no context window limits.
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+              <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(4, 1fr)", gap: 10 }}>
                 {[
                   { client: "Claude Code", setup: "rag mcp-config --install claude-code", icon: "⌨️" },
                   { client: "Claude Desktop", setup: "rag mcp-config --install claude-desktop", icon: "🖥️" },
@@ -789,7 +801,7 @@ rag search "your query" # test it from the terminal`}
             </div>
 
             {/* Prerequisites + stats */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: 12 }}>
               <div
                 style={{
                   background: C.surface,
@@ -959,7 +971,7 @@ rag search "your query" # test it from the terminal`}
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(3, 1fr)",
+                gridTemplateColumns: mobile ? "1fr" : "repeat(3, 1fr)",
                 gap: 10,
                 marginBottom: 16,
               }}
@@ -979,7 +991,7 @@ rag search "your query" # test it from the terminal`}
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(4, 1fr)",
+                gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(4, 1fr)",
                 gap: 10,
                 marginTop: 16,
               }}
@@ -1303,7 +1315,7 @@ rag search "your query" # test it from the terminal`}
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1fr",
+                gridTemplateColumns: mobile ? "1fr" : "1fr 1fr",
                 gap: 10,
                 marginTop: 16,
               }}
@@ -1492,7 +1504,7 @@ rag search "your query" # test it from the terminal`}
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1fr",
+                gridTemplateColumns: mobile ? "1fr" : "1fr 1fr",
                 gap: 10,
                 marginTop: 16,
               }}
@@ -1659,7 +1671,7 @@ rag search "your query" # test it from the terminal`}
                   background: C.bg,
                   padding: 12,
                   borderRadius: 6,
-                  whiteSpace: "pre",
+                  whiteSpace: "pre", overflowX: "auto",
                 }}
               >
 {`# ~/.config/local-rag/config.toml
@@ -1714,7 +1726,7 @@ transport = "stdio"`}
               >
                 Prerequisites
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: 8 }}>
                 {[
                   { name: "Python 3.11+", note: "Runtime" },
                   { name: "Docker", note: "For Qdrant container" },
@@ -1852,7 +1864,7 @@ transport = "stdio"`}
                   background: C.bg,
                   padding: 12,
                   borderRadius: 6,
-                  whiteSpace: "pre",
+                  whiteSpace: "pre", overflowX: "auto",
                 }}
               >
 {`# 1. Stop and remove Qdrant container + data
@@ -1923,7 +1935,7 @@ rm -rf /path/to/local-rag`}
                     background: C.bg,
                     padding: 12,
                     borderRadius: 6,
-                    whiteSpace: "pre",
+                    whiteSpace: "pre", overflowX: "auto",
                   }}
                 >
 {`# Remove models only (~6.4 GB, re-downloads on next use)
