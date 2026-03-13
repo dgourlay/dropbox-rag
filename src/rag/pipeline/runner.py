@@ -57,6 +57,7 @@ class _ParsedFileResult:
     """
 
     event: FileEvent
+    file_index: int
     start: float
     parsed_doc: ParsedDocument
     normalized: NormalizedDocument
@@ -70,6 +71,7 @@ class _ParseErrorResult:
     """Result when parsing failed for a file in the parser thread."""
 
     event: FileEvent
+    file_index: int
     error_msg: str
 
 
@@ -406,7 +408,7 @@ class PipelineRunner:
     # Pipeline parallelism internals
     # ------------------------------------------------------------------
 
-    def _parse_stage(self, event: FileEvent) -> _ParsedFileResult:
+    def _parse_stage(self, event: FileEvent, file_index: int = 0) -> _ParsedFileResult:
         """Run the CPU/IO-bound parse stage for a single file.
 
         Runs in the parser thread.  Does NOT touch SQLite or Qdrant --
@@ -444,6 +446,7 @@ class PipelineRunner:
 
         return _ParsedFileResult(
             event=event,
+            file_index=file_index,
             start=start,
             parsed_doc=parsed_doc,
             normalized=normalized,
@@ -460,12 +463,13 @@ class PipelineRunner:
     ) -> dict[ProcessingOutcome, int]:
         """Core implementation of the parallel batch pipeline."""
         counts: dict[ProcessingOutcome, int] = dict.fromkeys(ProcessingOutcome, 0)
+        total = len(events)
 
         # Pre-filter: skip poisoned and backed-off files before starting threads
-        eligible_events: list[FileEvent] = []
-        for event in events:
+        eligible: list[tuple[int, FileEvent]] = []  # (file_index, event)
+        for file_idx, event in enumerate(events, 1):
             if event.event_type == "deleted":
-                eligible_events.append(event)
+                eligible.append((file_idx, event))
                 continue
             existing = self._db.get_sync_state(event.file_path)
             skip = self._check_skip_retry(existing)
@@ -474,13 +478,12 @@ class PipelineRunner:
                 counts[outcome] += 1
                 if progress:
                     progress(
-                        sum(counts.values()), len(events),
+                        file_idx, total,
                         Path(event.file_path).name, outcome, detail,
                     )
                 continue
-            eligible_events.append(event)
+            eligible.append((file_idx, event))
 
-        total = len(events)
         processed_count = sum(counts.values())
         batch_size = self._config.embedding.batch_size
 
@@ -489,29 +492,29 @@ class PipelineRunner:
 
         def _parser_worker() -> None:
             """Parser thread: classify -> parse -> normalize -> chunk."""
-            parse_idx = 0
-            for event in eligible_events:
+            for file_idx, event in eligible:
                 try:
                     # Handle deletions immediately as skip results
                     if event.event_type == "deleted":
                         q.put(_ParseErrorResult(
-                            event=event, error_msg="__deleted__",
+                            event=event, file_index=file_idx,
+                            error_msg="__deleted__",
                         ))
                         continue
 
-                    parse_idx += 1
                     if on_start:
                         on_start(
-                            parse_idx, len(eligible_events),
+                            file_idx, total,
                             Path(event.file_path).name,
                         )
 
-                    item = self._parse_stage(event)
+                    item = self._parse_stage(event, file_index=file_idx)
                     q.put(item)
                 except Exception:
                     logger.exception("Parser thread error for %s", event.file_path)
                     q.put(_ParseErrorResult(
-                        event=event, error_msg="processing failed",
+                        event=event, file_index=file_idx,
+                        error_msg="processing failed",
                     ))
             # Sentinel: signal the consumer that we are done
             q.put(None)
@@ -526,13 +529,14 @@ class PipelineRunner:
 
         def _report_progress(
             outcome: ProcessingOutcome, detail: str, file_path: str,
+            file_index: int = 0,
         ) -> None:
             nonlocal processed_count
             processed_count += 1
             counts[outcome] += 1
             if progress:
                 progress(
-                    processed_count, total,
+                    file_index, total,
                     Path(file_path).name, outcome, detail,
                 )
 
@@ -562,6 +566,7 @@ class PipelineRunner:
                         ProcessingOutcome.INDEXED,
                         f"{len(pr.chunks)} chunks",
                         pr.event.file_path,
+                        pr.file_index,
                     )
                 except Exception:
                     logger.exception("Error indexing %s", pr.event.file_path)
@@ -576,6 +581,7 @@ class PipelineRunner:
                         ProcessingOutcome.ERROR,
                         "processing failed",
                         pr.event.file_path,
+                        pr.file_index,
                     )
 
             pending = []
@@ -598,6 +604,7 @@ class PipelineRunner:
                         ProcessingOutcome.DELETED,
                         "removed from index",
                         item.event.file_path,
+                        item.file_index,
                     )
                 else:
                     start_t = time.monotonic()
@@ -613,6 +620,7 @@ class PipelineRunner:
                         ProcessingOutcome.ERROR,
                         item.error_msg,
                         item.event.file_path,
+                        item.file_index,
                     )
                 continue
 
@@ -621,7 +629,7 @@ class PipelineRunner:
             dedup_result = self._run_dedup_check(pr)
             if dedup_result is not None:
                 outcome, detail = dedup_result
-                _report_progress(outcome, detail, pr.event.file_path)
+                _report_progress(outcome, detail, pr.event.file_path, pr.file_index)
                 # Flush dedup hashes periodically
                 if processed_count % 10 == 0:
                     self._dedup.flush()

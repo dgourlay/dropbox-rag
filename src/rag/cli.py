@@ -377,8 +377,18 @@ def _run_index(config: AppConfig, events: list[FileEvent]) -> None:
     _db, runner, _engine = _init_components(config)
     click.echo(" done.")
 
+    total = len(events)
+    idx_width = len(str(total))
+    name_width = 50
+
+    def _fmt_name(name: str) -> str:
+        if len(name) > name_width:
+            return name[: name_width - 1] + "…"
+        return name.ljust(name_width)
+
     def on_start(current: int, total: int, name: str) -> None:
-        click.echo(f"  [{current}/{total}] {name} — parsing...")
+        idx = f"[{current:>{idx_width}}/{total}]"
+        click.echo(f"  {idx} {_fmt_name(name)}  parsing...")
 
     def progress(
         current: int, total: int, name: str, outcome: ProcessingOutcome, detail: str
@@ -390,7 +400,8 @@ def _run_index(config: AppConfig, events: list[FileEvent]) -> None:
             ProcessingOutcome.DELETED: click.style("deleted", fg="cyan"),
             ProcessingOutcome.ERROR: click.style("error", fg="red"),
         }[outcome]
-        click.echo(f"  [{current}/{total}] {name} — {label} ({detail})")
+        idx = f"[{current:>{idx_width}}/{total}]"
+        click.echo(f"  {idx} {_fmt_name(name)}  {label} ({detail})")
 
     counts = runner.process_batch(events, progress=progress, on_start=on_start)
 
