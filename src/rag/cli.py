@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -366,6 +367,114 @@ def _handle_reindex(target: str, config: AppConfig, folder: str | None) -> None:
     _run_index(config, events)
 
 
+class _ProgressDisplay:
+    """Rolling two-column progress display for indexing.
+
+    Left column shows "parsing...", right column fills in with the result.
+    Maintains a rolling window of the most recent rows, redrawing in place
+    using ANSI cursor movement.
+    """
+
+    _WINDOW = 10
+    _NAME_W = 40
+    _STATUS_W = 30
+
+    _OUTCOME_LABELS: dict[str, tuple[str, str]] = {
+        "INDEXED": ("indexed", "green"),
+        "UNCHANGED": ("unchanged", "yellow"),
+        "DUPLICATE": ("duplicate", "yellow"),
+        "DELETED": ("deleted", "cyan"),
+        "ERROR": ("error", "red"),
+    }
+
+    def __init__(self, total: int) -> None:
+        from rag.types import ProcessingOutcome as _PO
+
+        self._total = total
+        self._idx_w = len(str(total))
+        self._lock = threading.Lock()
+        # file_index -> (name, result_str | None)
+        self._rows: dict[int, tuple[str, str | None]] = {}
+        self._drawn_lines = 0
+        self._completed = 0
+        self._po = _PO
+
+    def _trunc(self, name: str) -> str:
+        if len(name) > self._NAME_W:
+            return name[: self._NAME_W - 1] + "…"
+        return name
+
+    def _render_row(self, file_idx: int, name: str, result: str | None) -> str:
+        idx = f"[{file_idx:>{self._idx_w}}/{self._total}]"
+        left = f"{idx} {self._trunc(name)}"
+        left = left.ljust(self._idx_w + 2 + self._NAME_W + 3)
+        if result is not None:
+            return f"  {left} → {result}"
+        return f"  {left}   parsing..."
+
+    def _redraw(self) -> None:
+        """Redraw the rolling window in place."""
+        # Sort rows by file_index, take the visible window
+        sorted_idxs = sorted(self._rows.keys())
+
+        # Window: show rows around the action — from the earliest
+        # still-parsing row, or the last WINDOW rows if all are done
+        first_pending = None
+        for idx in sorted_idxs:
+            if self._rows[idx][1] is None:
+                first_pending = idx
+                break
+        if first_pending is not None:
+            # Show from 2 rows before first pending
+            start_pos = max(0, sorted_idxs.index(first_pending) - 2)
+        else:
+            start_pos = max(0, len(sorted_idxs) - self._WINDOW)
+
+        visible = sorted_idxs[start_pos : start_pos + self._WINDOW]
+
+        lines: list[str] = []
+        for idx in visible:
+            name, result = self._rows[idx]
+            lines.append(self._render_row(idx, name, result))
+
+        # Move cursor up to overwrite previous draw
+        if self._drawn_lines > 0:
+            sys.stdout.write(f"\033[{self._drawn_lines}A\033[J")
+
+        output = "\n".join(lines)
+        if lines:
+            sys.stdout.write(output + "\n")
+        sys.stdout.flush()
+        self._drawn_lines = len(lines)
+
+    def on_start(self, file_idx: int, _total: int, name: str) -> None:
+        with self._lock:
+            self._rows[file_idx] = (name, None)
+            self._redraw()
+
+    def on_done(
+        self,
+        file_idx: int,
+        _total: int,
+        name: str,
+        outcome: object,
+        detail: str,
+    ) -> None:
+        label_name = outcome.name if hasattr(outcome, "name") else str(outcome)
+        label_info = self._OUTCOME_LABELS.get(label_name, (label_name.lower(), "white"))
+        styled = click.style(label_info[0], fg=label_info[1])
+        result_str = f"{styled} ({detail})"
+
+        with self._lock:
+            self._rows[file_idx] = (name, result_str)
+            self._completed += 1
+            self._redraw()
+
+    def finalize(self) -> None:
+        """Ensure cursor is past the display area."""
+        pass
+
+
 def _run_index(config: AppConfig, events: list[FileEvent]) -> None:
     from rag.types import ProcessingOutcome
 
@@ -377,33 +486,14 @@ def _run_index(config: AppConfig, events: list[FileEvent]) -> None:
     _db, runner, _engine = _init_components(config)
     click.echo(" done.")
 
-    total = len(events)
-    idx_width = len(str(total))
-    name_width = 50
+    display = _ProgressDisplay(len(events))
 
-    def _fmt_name(name: str) -> str:
-        if len(name) > name_width:
-            return name[: name_width - 1] + "…"
-        return name.ljust(name_width)
-
-    def on_start(current: int, total: int, name: str) -> None:
-        idx = f"[{current:>{idx_width}}/{total}]"
-        click.echo(f"  {idx} {_fmt_name(name)}  parsing...")
-
-    def progress(
-        current: int, total: int, name: str, outcome: ProcessingOutcome, detail: str
-    ) -> None:
-        label = {
-            ProcessingOutcome.INDEXED: click.style("indexed", fg="green"),
-            ProcessingOutcome.UNCHANGED: click.style("unchanged", fg="yellow"),
-            ProcessingOutcome.DUPLICATE: click.style("duplicate", fg="yellow"),
-            ProcessingOutcome.DELETED: click.style("deleted", fg="cyan"),
-            ProcessingOutcome.ERROR: click.style("error", fg="red"),
-        }[outcome]
-        idx = f"[{current:>{idx_width}}/{total}]"
-        click.echo(f"  {idx} {_fmt_name(name)}  {label} ({detail})")
-
-    counts = runner.process_batch(events, progress=progress, on_start=on_start)
+    counts = runner.process_batch(
+        events,
+        progress=display.on_done,
+        on_start=display.on_start,
+    )
+    display.finalize()
 
     parts: list[str] = []
     if counts[ProcessingOutcome.INDEXED]:
