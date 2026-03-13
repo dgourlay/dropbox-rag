@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -141,8 +142,18 @@ class PipelineRunner:
                 self._handle_deletion(event)
                 return ProcessingOutcome.DELETED, "removed from index"
 
-            # Fast skip: if file content hasn't changed since last successful index, skip entirely
+            # Check poison quarantine before processing
             existing_sync = self._db.get_sync_state(file_path)
+            if (
+                existing_sync is not None
+                and existing_sync.process_status == "poison"
+            ):
+                return (
+                    ProcessingOutcome.ERROR,
+                    "quarantined \u2014 file failed 3+ times",
+                )
+
+            # Fast skip: if file content hasn't changed since last successful index, skip entirely
             if (
                 existing_sync is not None
                 and existing_sync.content_hash == event.content_hash
@@ -446,8 +457,28 @@ class PipelineRunner:
     ) -> dict[ProcessingOutcome, int]:
         """Core implementation of the parallel batch pipeline."""
         counts: dict[ProcessingOutcome, int] = dict.fromkeys(ProcessingOutcome, 0)
+
+        # Pre-filter: skip poisoned and backed-off files before starting threads
+        eligible_events: list[FileEvent] = []
+        for event in events:
+            if event.event_type == "deleted":
+                eligible_events.append(event)
+                continue
+            existing = self._db.get_sync_state(event.file_path)
+            skip = self._check_skip_retry(existing)
+            if skip is not None:
+                outcome, detail = skip
+                counts[outcome] += 1
+                if progress:
+                    progress(
+                        sum(counts.values()), len(events),
+                        Path(event.file_path).name, outcome, detail,
+                    )
+                continue
+            eligible_events.append(event)
+
         total = len(events)
-        processed_count = 0
+        processed_count = sum(counts.values())
         batch_size = self._config.embedding.batch_size
 
         # Queue with maxsize=2 to limit memory (at most 2 parsed docs buffered)
@@ -455,7 +486,7 @@ class PipelineRunner:
 
         def _parser_worker() -> None:
             """Parser thread: classify -> parse -> normalize -> chunk."""
-            for event in events:
+            for event in eligible_events:
                 try:
                     # Handle deletions immediately as skip results
                     if event.event_type == "deleted":
@@ -1098,11 +1129,44 @@ class PipelineRunner:
             if doc:
                 self._delete_stale_points(doc.doc_id, set())
 
+    @staticmethod
+    def _check_skip_retry(
+        sync_state: SyncStateRow | None,
+    ) -> tuple[ProcessingOutcome, str] | None:
+        """Check if a file should be skipped due to poison quarantine or backoff.
+
+        Returns (outcome, detail) if the file should be skipped, or None to proceed.
+        """
+        if sync_state is None:
+            return None
+        if sync_state.process_status == "poison":
+            return ProcessingOutcome.ERROR, "quarantined \u2014 file failed 3+ times"
+        if (
+            sync_state.process_status == "error"
+            and sync_state.retry_count > 0
+            and sync_state.synced_at
+        ):
+            try:
+                last_attempt = datetime.fromisoformat(sync_state.synced_at)
+                backoff = timedelta(seconds=(2 ** sync_state.retry_count) * 30)
+                retry_after = last_attempt + backoff
+                now = datetime.now(tz=last_attempt.tzinfo or UTC)
+                if now < retry_after:
+                    remaining = int((retry_after - now).total_seconds())
+                    return (
+                        ProcessingOutcome.ERROR,
+                        f"backing off \u2014 retry in {remaining}s",
+                    )
+            except (ValueError, TypeError):
+                pass  # If timestamp is unparseable, allow retry
+        return None
+
     def _update_sync_status(self, file_path: str, status: str, error: str | None = None) -> None:
         existing = self._db.get_sync_state(file_path)
         if existing:
             retry = existing.retry_count + (1 if status == "error" else 0)
             final_status = "poison" if status == "error" and retry >= 3 else status
+            now = datetime.now(tz=UTC).isoformat()
             self._db.upsert_sync_state(
                 SyncStateRow(
                     id=existing.id,
@@ -1113,6 +1177,7 @@ class PipelineRunner:
                     file_type=existing.file_type,
                     modified_at=existing.modified_at,
                     content_hash=existing.content_hash,
+                    synced_at=now,
                     process_status=final_status,
                     error_message=error,
                     retry_count=retry,

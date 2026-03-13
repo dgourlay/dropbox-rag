@@ -422,17 +422,23 @@ def serve(use_http: bool) -> None:
 @click.option("--daemon", is_flag=True, help="Run in background (not yet implemented).")
 def watch(daemon: bool) -> None:
     """Watch configured folders for changes and auto-index."""
+    import threading
+
     from watchdog.events import FileSystemEventHandler
     from watchdog.observers import Observer
 
     from rag.config import load_config
-    from rag.sync.scanner import classify_file_type
+    from rag.sync.scanner import classify_file_type, rescan_for_changes
+    from rag.types import ProcessingOutcome
 
     if daemon:
         click.echo("Daemon mode is not yet implemented. Running in foreground.")
 
     config = load_config()
-    _db, runner, _engine = _init_components(config)
+    db, runner, _engine = _init_components(config)
+
+    # Track known file paths so we can detect deletions
+    known_paths: set[str] = set(db.get_all_tracked_paths())
 
     class _Handler(FileSystemEventHandler):
         def __init__(self) -> None:
@@ -457,6 +463,43 @@ def watch(daemon: bool) -> None:
                 del self._pending[p]
             return ready
 
+    def _format_counts(counts: dict[ProcessingOutcome, int], total: int) -> str:
+        parts: list[str] = []
+        if counts[ProcessingOutcome.INDEXED]:
+            parts.append(f"{counts[ProcessingOutcome.INDEXED]} indexed")
+        if counts[ProcessingOutcome.UNCHANGED]:
+            parts.append(f"{counts[ProcessingOutcome.UNCHANGED]} unchanged")
+        if counts[ProcessingOutcome.DUPLICATE]:
+            parts.append(f"{counts[ProcessingOutcome.DUPLICATE]} duplicates")
+        if counts[ProcessingOutcome.DELETED]:
+            parts.append(f"{counts[ProcessingOutcome.DELETED]} deleted")
+        if counts[ProcessingOutcome.ERROR]:
+            parts.append(f"{counts[ProcessingOutcome.ERROR]} errors")
+        return f"Processed {total} files: {', '.join(parts)}."
+
+    def _startup_rescan() -> None:
+        """Background thread: walk folders and process changes missed while stopped."""
+        try:
+            events = rescan_for_changes(
+                config.folders,
+                db.get_sync_state,
+                db.get_all_tracked_paths,
+            )
+            if events:
+                click.echo(f"Startup re-scan found {len(events)} changes.")
+                counts = runner.process_batch(events)
+                click.echo(f"  {_format_counts(counts, len(events))}")
+                # Update known paths after re-scan
+                for ev in events:
+                    if ev.event_type == "deleted":
+                        known_paths.discard(ev.file_path)
+                    else:
+                        known_paths.add(ev.file_path)
+            else:
+                click.echo("Startup re-scan: no changes detected.")
+        except Exception as exc:
+            click.echo(f"Startup re-scan error: {exc}", err=True)
+
     handler = _Handler()
     observer = Observer()
     for folder in config.folders.paths:
@@ -465,6 +508,11 @@ def watch(daemon: bool) -> None:
             click.echo(f"Watching: {folder}")
 
     observer.start()
+
+    # Spawn background re-scan thread (non-blocking)
+    rescan_thread = threading.Thread(target=_startup_rescan, daemon=True)
+    rescan_thread.start()
+
     click.echo("Press Ctrl+C to stop.")
     try:
         while True:
@@ -479,10 +527,22 @@ def watch(daemon: bool) -> None:
                 events = []
                 for file_path in ready:
                     path = Path(file_path)
-                    if not path.is_file():
-                        continue
                     ft = classify_file_type(path)
                     if ft is None:
+                        continue
+                    if not path.is_file():
+                        # File was deleted — generate deletion event if previously known
+                        if file_path in known_paths:
+                            existing = db.get_sync_state(file_path)
+                            events.append(
+                                FileEvent(
+                                    file_path=file_path,
+                                    content_hash=existing.content_hash if existing else "",
+                                    file_type=existing.file_type if existing else ft,
+                                    event_type="deleted",
+                                    modified_at=existing.modified_at if existing else "",
+                                )
+                            )
                         continue
                     try:
                         content_hash = compute_file_hash(path)
@@ -500,10 +560,14 @@ def watch(daemon: bool) -> None:
                     except OSError:
                         continue
                 if events:
-                    success, errors = runner.process_batch(events)
-                    click.echo(
-                        f"Processed {success + errors} files: {success} ok, {errors} errors."
-                    )
+                    counts = runner.process_batch(events)
+                    click.echo(f"  {_format_counts(counts, len(events))}")
+                    # Update known paths
+                    for ev in events:
+                        if ev.event_type == "deleted":
+                            known_paths.discard(ev.file_path)
+                        else:
+                            known_paths.add(ev.file_path)
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
@@ -541,10 +605,22 @@ def status(as_json: bool) -> None:
             GROUP BY folder_path"""
         ).fetchall()
 
+        poisoned_count = db.get_poisoned_count()
+        poisoned_files = db.get_poisoned_files()
+
         data = {
             "documents": doc_count,
             "chunks": chunk_count,
             "errors": error_count,
+            "poisoned_count": poisoned_count,
+            "poisoned_files": [
+                {
+                    "file_path": pf.file_path,
+                    "error_message": pf.error_message,
+                    "retry_count": pf.retry_count,
+                }
+                for pf in poisoned_files
+            ],
             "folders": [
                 {
                     "folder_path": row[0],

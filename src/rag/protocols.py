@@ -59,6 +59,7 @@ class MetadataDB(Protocol):
     def get_recent_documents(
         self, limit: int, folder_filter: str | None = None
     ) -> list[DocumentRow]: ...
+    def get_all_tracked_paths(self) -> list[str]: ...
 
 
 class VectorStore(Protocol):

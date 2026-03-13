@@ -260,6 +260,20 @@ class SqliteMetadataDB:
         ).fetchone()
         return int(row[0])
 
+    def get_poisoned_count(self) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM sync_state WHERE process_status = 'poison' AND NOT is_deleted"
+        ).fetchone()
+        return int(row[0])
+
+    def get_poisoned_files(self) -> list[SyncStateRow]:
+        rows = self._conn.execute(
+            """SELECT * FROM sync_state
+            WHERE process_status = 'poison' AND NOT is_deleted
+            ORDER BY rowid DESC"""
+        ).fetchall()
+        return [_row_to_sync_state(r) for r in rows]
+
     def get_recent_documents(
         self, limit: int, folder_filter: str | None = None
     ) -> list[DocumentRow]:
@@ -276,6 +290,12 @@ class SqliteMetadataDB:
                 (limit,),
             ).fetchall()
         return [_row_to_document(r) for r in rows]
+
+    def get_all_tracked_paths(self) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT file_path FROM sync_state WHERE NOT is_deleted"
+        ).fetchall()
+        return [row["file_path"] for row in rows]
 
 
 def _row_to_sync_state(row: sqlite3.Row) -> SyncStateRow:

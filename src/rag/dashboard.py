@@ -428,6 +428,34 @@ def render_dashboard(conn: sqlite3.Connection, config: AppConfig) -> None:
         console.print(Columns(bottom_parts, equal=False, expand=True))
         console.print()
 
+    # Poisoned files section
+    poisoned_rows: list[Any] = conn.execute(
+        """SELECT file_path, error_message, retry_count
+           FROM sync_state
+           WHERE process_status = 'poison' AND NOT is_deleted
+           ORDER BY rowid DESC"""
+    ).fetchall()
+
+    if poisoned_rows:
+        poison_table = Table(
+            title="Poisoned Files (quarantined after 3+ failures)",
+            title_style="bold red",
+            border_style="red",
+            show_lines=True,
+            padding=(0, 1),
+            expand=True,
+        )
+        poison_table.add_column("File", style="white", ratio=2)
+        poison_table.add_column("Retries", justify="center", style="yellow")
+        poison_table.add_column("Error", style="red", ratio=3)
+
+        for path, error_msg, retries in poisoned_rows:
+            filename = path.rsplit("/", 1)[-1]
+            poison_table.add_row(filename, str(retries), error_msg or "Unknown error")
+
+        console.print(poison_table)
+        console.print()
+
     # Errors section (only if errors exist)
     if error_docs:
         error_table = Table(
