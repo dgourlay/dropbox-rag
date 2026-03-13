@@ -91,7 +91,9 @@ def _make_document_row(doc_id: str = "doc-1") -> DocumentRow:
         modified_at="2025-01-01T00:00:00",
         indexed_at="2025-01-02T00:00:00",
         raw_content_hash="abc123",
-        summary_l1="A test document about testing.",
+        summary_8w="Test doc about testing.",
+        summary_32w="A test document about testing.",
+        summary_128w="A test document about testing.",
     )
 
 

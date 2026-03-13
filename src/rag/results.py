@@ -27,9 +27,11 @@ ParseResult = Annotated[
 
 class SummarySuccess(BaseModel):
     status: Literal["success"] = "success"
-    summary_l1: str
-    summary_l2: str
-    summary_l3: str
+    summary_8w: str
+    summary_16w: str
+    summary_32w: str
+    summary_64w: str
+    summary_128w: str
     key_topics: list[str]
     doc_type_guess: str | None = None
 
@@ -47,8 +49,9 @@ SummaryResult = Annotated[
 
 class SectionSummarySuccess(BaseModel):
     status: Literal["success"] = "success"
-    section_summary: str
-    section_summary_l2: str | None = None
+    section_summary_8w: str
+    section_summary_32w: str
+    section_summary_128w: str
 
 
 class SectionSummaryError(BaseModel):

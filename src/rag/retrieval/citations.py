@@ -72,11 +72,16 @@ class CitationAssembler:
         return results
 
     def _expand_context(self, hit: SearchHit, window: int) -> str:
-        """Fetch adjacent chunks and merge text, deduplicating overlap."""
+        """Fetch adjacent chunks and merge text, deduplicating overlap.
+
+        For summary hits (chunk_order is None), expands to grounded source text:
+        - document_summary: prepends summary, then merges first 3 chunks
+        - section_summary: prepends summary, then merges section's chunks
+        """
         chunk_order: int | None = hit.payload.get("chunk_order")
 
         if chunk_order is None:
-            return hit.text
+            return self._expand_summary_hit(hit)
 
         adjacent: list[ChunkRow] = self._db.get_adjacent_chunks(hit.doc_id, chunk_order, window)
         if not adjacent:
@@ -88,6 +93,30 @@ class CitationAssembler:
 
         # Deduplicate overlapping content
         return self._merge_overlapping_texts(texts)
+
+    def _expand_summary_hit(self, hit: SearchHit) -> str:
+        """Expand a summary hit by fetching grounded source chunks."""
+        record_type = hit.payload.get("record_type", "")
+
+        if record_type == "document_summary":
+            chunks = self._db.get_chunks(hit.doc_id)[:3]
+            if chunks:
+                chunk_texts = [c.chunk_text for c in chunks]
+                merged = self._merge_overlapping_texts(chunk_texts)
+                return f"[Summary] {hit.text}\n\n{merged}"
+            return hit.text
+
+        if record_type == "section_summary":
+            section_id: str | None = hit.payload.get("section_id")
+            if section_id:
+                chunks = self._db.get_chunks_by_section(section_id)
+                if chunks:
+                    chunk_texts = [c.chunk_text for c in chunks]
+                    merged = self._merge_overlapping_texts(chunk_texts)
+                    return f"[Section Summary] {hit.text}\n\n{merged}"
+            return hit.text
+
+        return hit.text
 
     def _merge_overlapping_texts(self, texts: list[str]) -> str:
         """Merge texts that may have overlapping content."""

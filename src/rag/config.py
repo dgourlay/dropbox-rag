@@ -86,13 +86,17 @@ class SummarizationConfig(BaseModel):
             if self.args is None:
                 self.args = preset[0]
             if self.input_mode is None:
-                self.input_mode = preset[1]
+                self.input_mode = preset[1]  # type: ignore[assignment]
         # Fallback for unknown tools
         if self.args is None:
             self.args = []
         if self.input_mode is None:
             self.input_mode = "stdin"
         return self
+
+
+class RetrievalConfig(BaseModel):
+    hyde_enabled: bool = True
 
 
 class MCPConfig(BaseModel):
@@ -115,6 +119,7 @@ class AppConfig(BaseModel):
     embedding: EmbeddingConfig = EmbeddingConfig()
     reranker: RerankerConfig = RerankerConfig()
     summarization: SummarizationConfig = SummarizationConfig()
+    retrieval: RetrievalConfig = RetrievalConfig()
     mcp: MCPConfig = MCPConfig()
     watcher: WatcherConfig = WatcherConfig()
 

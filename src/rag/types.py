@@ -12,7 +12,8 @@ NAMESPACE_RAG = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 
 # --- Constrained value types ---
 ProcessStatus = Literal["pending", "processing", "done", "error", "poison"]
-SummaryLevel = Literal["l1", "l2", "l3"]
+SummaryLevel = Literal["8w", "16w", "32w", "64w", "128w"]
+DetailLevel = Literal["8w", "16w", "32w", "64w", "128w"]
 
 
 class RecordType(StrEnum):
@@ -113,6 +114,7 @@ class QdrantPayloadModel(BaseModel):
     ocr_confidence: float | None = None
     token_count: int | None = None
     citation_label: str | None = None
+    key_topics: list[str] | None = None
     text: str
 
 
@@ -241,9 +243,11 @@ class DocumentRow(BaseModel):
     ocr_confidence: float | None = None
     doc_type_guess: str | None = None
     key_topics: list[str] | None = None
-    summary_l1: str | None = None
-    summary_l2: str | None = None
-    summary_l3: str | None = None
+    summary_8w: str | None = None
+    summary_16w: str | None = None
+    summary_32w: str | None = None
+    summary_64w: str | None = None
+    summary_128w: str | None = None
     summary_content_hash: str | None = None
     embedding_model_version: str | None = None
     chunker_version: str | None = None
@@ -256,8 +260,9 @@ class SectionRow(BaseModel):
     section_order: int
     page_start: int | None = None
     page_end: int | None = None
-    section_summary: str | None = None
-    section_summary_l2: str | None = None
+    section_summary_8w: str | None = None
+    section_summary_32w: str | None = None
+    section_summary_128w: str | None = None
     embedding_model_version: str | None = None
 
 
@@ -302,6 +307,7 @@ class QuickSearchInput(BaseModel):
     query: str
     folder_filter: str | None = None
     top_k: int = 5
+    detail: DetailLevel = "32w"
 
 
 class SearchDocumentsOutput(BaseModel):
@@ -314,6 +320,7 @@ class GetDocumentContextInput(BaseModel):
     doc_id: str | None = None
     chunk_id: str | None = None
     window: int = 1
+    detail: DetailLevel = "128w"
 
 
 class DocumentContextOutput(BaseModel):
@@ -327,11 +334,13 @@ class DocumentContextOutput(BaseModel):
 class ListRecentDocumentsInput(BaseModel):
     folder_filter: str | None = None
     limit: int = 20
+    detail: DetailLevel = "8w"
 
 
 class RecentDocumentEntry(BaseModel):
     doc_id: str
     title: str | None = None
+    summary: str | None = None
     file_path: str
     file_type: str
     modified_at: str

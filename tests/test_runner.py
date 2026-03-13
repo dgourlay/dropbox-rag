@@ -38,8 +38,9 @@ def _create_db() -> sqlite3.Connection:
     """Create an in-memory SQLite DB with all tables."""
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    schema = Path(__file__).parent.parent / "migrations" / "001_initial.sql"
-    conn.executescript(schema.read_text())
+    migrations_dir = Path(__file__).parent.parent / "migrations"
+    conn.executescript((migrations_dir / "001_initial.sql").read_text())
+    conn.executescript((migrations_dir / "002_pyramid_summaries.sql").read_text())
     return conn
 
 
@@ -502,15 +503,18 @@ class TestSummarizationBatchEmbedding:
         mock_summarizer = MagicMock()
         mock_summarizer.available = True
         mock_summarizer.summarize_document.return_value = SummarySuccess(
-            summary_l1="Short",
-            summary_l2="Medium summary.",
-            summary_l3="Long detailed summary of the document.",
+            summary_8w="Short",
+            summary_16w="Medium summary.",
+            summary_32w="A moderate summary of the document.",
+            summary_64w="An extended summary covering more details.",
+            summary_128w="Long detailed summary of the document.",
             key_topics=["topic1"],
             doc_type_guess="report",
         )
         mock_summarizer.summarize_section.return_value = SectionSummarySuccess(
-            section_summary="Section summary text.",
-            section_summary_l2="Short section",
+            section_summary_8w="Short section",
+            section_summary_32w="Section summary text.",
+            section_summary_128w="Detailed section summary text with more context.",
         )
 
         runner, mocks = _make_runner_with_summarizer(
@@ -571,9 +575,11 @@ class TestSummarizationBatchEmbedding:
         mock_summarizer = MagicMock()
         mock_summarizer.available = True
         mock_summarizer.summarize_document.return_value = SummarySuccess(
-            summary_l1="Short",
-            summary_l2="Medium.",
-            summary_l3="Long doc summary.",
+            summary_8w="Short",
+            summary_16w="Medium.",
+            summary_32w="Moderate doc summary.",
+            summary_64w="Extended doc summary.",
+            summary_128w="Long doc summary.",
             key_topics=["t1"],
             doc_type_guess="notes",
         )
@@ -588,8 +594,9 @@ class TestSummarizationBatchEmbedding:
             if call_count == 2:
                 return SectionSummaryError(error="LLM timeout")
             return SectionSummarySuccess(
-                section_summary=f"Summary for call {call_count}",
-                section_summary_l2="Short",
+                section_summary_8w="Short",
+                section_summary_32w=f"Summary for call {call_count}",
+                section_summary_128w=f"Detailed summary for call {call_count}",
             )
 
         mock_summarizer.summarize_section.side_effect = section_side_effect
@@ -614,9 +621,11 @@ class TestSummarizationBatchEmbedding:
         mock_summarizer = MagicMock()
         mock_summarizer.available = True
         mock_summarizer.summarize_document.return_value = SummarySuccess(
-            summary_l1="Short",
-            summary_l2="Medium.",
-            summary_l3="Long doc summary.",
+            summary_8w="Short",
+            summary_16w="Medium.",
+            summary_32w="Moderate doc summary.",
+            summary_64w="Extended doc summary.",
+            summary_128w="Long doc summary.",
             key_topics=["t1"],
             doc_type_guess="notes",
         )
@@ -632,8 +641,9 @@ class TestSummarizationBatchEmbedding:
                 msg = "Subprocess crashed"
                 raise RuntimeError(msg)
             return SectionSummarySuccess(
-                section_summary=f"Summary for call {call_count}",
-                section_summary_l2="Short",
+                section_summary_8w="Short",
+                section_summary_32w=f"Summary for call {call_count}",
+                section_summary_128w=f"Detailed summary for call {call_count}",
             )
 
         mock_summarizer.summarize_section.side_effect = section_side_effect
@@ -660,8 +670,9 @@ class TestSummarizationBatchEmbedding:
         mock_summarizer.available = True
         mock_summarizer.summarize_document.return_value = SummaryError(error="timeout")
         mock_summarizer.summarize_section.return_value = SectionSummarySuccess(
-            section_summary="Section summary.",
-            section_summary_l2="Short",
+            section_summary_8w="Short",
+            section_summary_32w="Section summary.",
+            section_summary_128w="Detailed section summary.",
         )
 
         runner, mocks = _make_runner_with_summarizer(
@@ -684,9 +695,11 @@ class TestSummarizationBatchEmbedding:
         mock_summarizer = MagicMock()
         mock_summarizer.available = True
         mock_summarizer.summarize_document.return_value = SummarySuccess(
-            summary_l1="Short",
-            summary_l2="Medium.",
-            summary_l3="Long doc summary.",
+            summary_8w="Short",
+            summary_16w="Medium.",
+            summary_32w="Moderate doc summary.",
+            summary_64w="Extended doc summary.",
+            summary_128w="Long doc summary.",
             key_topics=["t1"],
             doc_type_guess="report",
         )
@@ -695,8 +708,9 @@ class TestSummarizationBatchEmbedding:
             text: str, heading: str | None, doc_context: str,
         ) -> SectionSummarySuccess | SectionSummaryError:
             return SectionSummarySuccess(
-                section_summary=f"Summary of {heading}",
-                section_summary_l2=f"Short {heading}",
+                section_summary_8w=f"Short {heading}",
+                section_summary_32w=f"Summary of {heading}",
+                section_summary_128w=f"Detailed summary of {heading}",
             )
 
         mock_summarizer.summarize_section.side_effect = section_side_effect
@@ -714,7 +728,7 @@ class TestSummarizationBatchEmbedding:
         # First text is doc summary, then sections in order
         assert summary_texts[0] == "Long doc summary."
         for i in range(num_sections):
-            assert summary_texts[i + 1] == f"Summary of Section {i}"
+            assert summary_texts[i + 1] == f"Detailed summary of Section {i}"
 
 
 class TestMaxWorkersConfig:

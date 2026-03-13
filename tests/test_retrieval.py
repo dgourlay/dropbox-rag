@@ -69,7 +69,7 @@ class TestRRFFuse:
     def test_single_source_scores(self) -> None:
         """Dense-only hits get correct RRF scores."""
         hits = [_make_hit("a"), _make_hit("b")]
-        fused = rrf_fuse(hits, [])
+        fused = rrf_fuse([hits])
         assert len(fused) == 2
         assert fused[0].point_id == "a"
         assert fused[0].score == pytest.approx(1.0 / (RRF_K + 1))
@@ -79,7 +79,7 @@ class TestRRFFuse:
         """Hit appearing in both lists gets summed RRF score."""
         dense = [_make_hit("a"), _make_hit("b")]
         keyword = [_make_hit("b"), _make_hit("c")]
-        fused = rrf_fuse(dense, keyword)
+        fused = rrf_fuse([dense, keyword])
 
         scores = {h.point_id: h.score for h in fused}
         # "b" appears at rank 1 in dense (1/(61+1)) and rank 0 in keyword (1/(60+1))
@@ -91,18 +91,18 @@ class TestRRFFuse:
         """Same point_id in both lists produces single entry."""
         dense = [_make_hit("x")]
         keyword = [_make_hit("x")]
-        fused = rrf_fuse(dense, keyword)
+        fused = rrf_fuse([dense, keyword])
         assert len(fused) == 1
 
     def test_empty_inputs(self) -> None:
         """Empty inputs return empty list."""
-        assert rrf_fuse([], []) == []
+        assert rrf_fuse([]) == []
 
     def test_ordering_by_score(self) -> None:
         """Results are sorted descending by RRF score."""
         dense = [_make_hit("a"), _make_hit("b"), _make_hit("c")]
         keyword = [_make_hit("c"), _make_hit("a")]
-        fused = rrf_fuse(dense, keyword)
+        fused = rrf_fuse([dense, keyword])
         scores = [h.score for h in fused]
         assert scores == sorted(scores, reverse=True)
 
@@ -111,12 +111,16 @@ class TestRRFFuse:
 
 
 class TestQueryAnalyzer:
-    def test_short_query_is_broad(self) -> None:
+    def test_short_noun_query_is_navigational(self) -> None:
         result = analyze_query("machine learning")
-        assert result.classification == "broad"
+        assert result.classification == "navigational"
 
-    def test_question_is_broad(self) -> None:
+    def test_long_question_without_broad_keywords_is_specific(self) -> None:
         result = analyze_query("what are the main findings of the research paper")
+        assert result.classification == "specific"
+
+    def test_overview_query_is_broad(self) -> None:
+        result = analyze_query("give me an overview of the project")
         assert result.classification == "broad"
 
     def test_specific_query(self) -> None:
@@ -214,20 +218,20 @@ class TestApplyLayerWeights:
 
 class TestApplyRecencyBoost:
     def test_recent_document_gets_max_boost(self) -> None:
-        """Document modified today gets ~30% boost."""
+        """Document modified today gets ~15% boost."""
         now = datetime(2025, 6, 15, tzinfo=UTC)
         hits = [_make_hit("a", score=1.0, modified_at="2025-06-15T00:00:00+00:00")]
         boosted = apply_recency_boost(hits, now=now)
-        # 0 days => boost = 0.3 * 2^0 = 0.3, new_score = 1.0 * 1.3
-        assert boosted[0].score == pytest.approx(1.3)
+        # 0 days => boost = 0.15 * 2^0 = 0.15, new_score = 1.0 * 1.15
+        assert boosted[0].score == pytest.approx(1.15)
 
     def test_90_day_old_document_gets_half_boost(self) -> None:
-        """Document modified 90 days ago gets ~15% boost (half-life)."""
+        """Document modified 90 days ago gets ~7.5% boost (half-life)."""
         now = datetime(2025, 6, 15, tzinfo=UTC)
         old_date = now - timedelta(days=90)
         hits = [_make_hit("a", score=1.0, modified_at=old_date.isoformat())]
         boosted = apply_recency_boost(hits, now=now)
-        expected = 1.0 * (1.0 + 0.3 * 0.5)  # half-life decay
+        expected = 1.0 * (1.0 + 0.15 * 0.5)  # half-life decay
         assert boosted[0].score == pytest.approx(expected)
 
     def test_180_day_old_document_gets_quarter_boost(self) -> None:
@@ -236,7 +240,7 @@ class TestApplyRecencyBoost:
         old_date = now - timedelta(days=180)
         hits = [_make_hit("a", score=1.0, modified_at=old_date.isoformat())]
         boosted = apply_recency_boost(hits, now=now)
-        expected = 1.0 * (1.0 + 0.3 * 0.25)
+        expected = 1.0 * (1.0 + 0.15 * 0.25)
         assert boosted[0].score == pytest.approx(expected)
 
     def test_very_old_document_negligible_boost(self) -> None:
@@ -290,7 +294,7 @@ class TestApplyRecencyBoost:
         now = datetime(2025, 6, 15, tzinfo=UTC)
         hits = [_make_hit("a", score=1.0, modified_at="2025-06-15")]
         boosted = apply_recency_boost(hits, now=now)
-        assert boosted[0].score == pytest.approx(1.3)
+        assert boosted[0].score == pytest.approx(1.15)
 
     def test_empty_hits(self) -> None:
         """Empty input returns empty output."""
@@ -370,14 +374,13 @@ class TestRetrievalEngine:
 
         calls = vs.query_dense.call_args_list
         assert len(calls) == 3
-        # Check record_type kwargs
-        assert calls[0].kwargs.get("record_type") == RecordType.DOCUMENT_SUMMARY
-        assert calls[1].kwargs.get("record_type") == RecordType.SECTION_SUMMARY
-        assert calls[2].kwargs.get("record_type") == RecordType.CHUNK
-        # Check limits
-        assert calls[0][0][2] == 20  # doc summaries: top 20
-        assert calls[1][0][2] == 20  # section summaries: top 20
-        assert calls[2][0][2] == 30  # chunks: top 30
+        # Extract (record_type, limit) pairs — order is nondeterministic due to ThreadPoolExecutor
+        lane_specs = {(c[0][3], c[0][2]) for c in calls}
+        assert lane_specs == {
+            (RecordType.DOCUMENT_SUMMARY, 20),
+            (RecordType.SECTION_SUMMARY, 20),
+            (RecordType.CHUNK, 30),
+        }
 
     def test_filters_passed_through(self) -> None:
         """Explicit filters are forwarded to vector store."""
@@ -403,8 +406,7 @@ class TestRetrievalEngine:
 
         assert result.debug_info is not None
         assert "embed_ms" in result.debug_info
-        assert "dense_ms" in result.debug_info
-        assert "keyword_ms" in result.debug_info
+        assert "prefetch_ms" in result.debug_info
         assert "rerank_ms" in result.debug_info
         assert "total_ms" in result.debug_info
         assert "query_classification" in result.debug_info

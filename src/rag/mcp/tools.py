@@ -14,9 +14,32 @@ if TYPE_CHECKING:
     from rag.config import AppConfig
     from rag.db.models import SqliteMetadataDB
     from rag.retrieval.engine import RetrievalEngine
-    from rag.types import CitedEvidence, DocumentRow
+    from rag.types import CitedEvidence, DetailLevel, DocumentRow
 
 logger = logging.getLogger(__name__)
+
+_DETAIL_FIELD_MAP: dict[str, str] = {
+    "8w": "summary_8w",
+    "16w": "summary_16w",
+    "32w": "summary_32w",
+    "64w": "summary_64w",
+    "128w": "summary_128w",
+}
+
+_DETAIL_SCHEMA: dict[str, object] = {
+    "type": "string",
+    "enum": ["8w", "16w", "32w", "64w", "128w"],
+    "description": (
+        "Summary detail level: '8w' (short phrase), '16w' (one sentence), "
+        "'32w' (1-2 sentences), '64w' (short paragraph), '128w' (detailed paragraph)"
+    ),
+}
+
+
+def _get_doc_summary(doc: DocumentRow, detail: DetailLevel) -> str | None:
+    """Look up the summary field on DocumentRow for the given detail level."""
+    field_name = _DETAIL_FIELD_MAP.get(detail, "summary_32w")
+    return getattr(doc, field_name, None)
 
 
 class _Components:
@@ -55,6 +78,8 @@ class _Components:
             citation_assembler=citations,
             top_k_candidates=self._config.reranker.top_k_candidates,
             top_k_final=self._config.reranker.top_k_final,
+            retrieval_config=self._config.retrieval,
+            summarization_config=self._config.summarization,
         )
 
         self._db = db
@@ -142,6 +167,7 @@ _TOOLS: list[types.Tool] = [
                     "description": "Number of adjacent chunks to include (default 1)",
                     "default": 1,
                 },
+                "detail": {**_DETAIL_SCHEMA, "default": "128w"},
             },
         },
     ),
@@ -160,6 +186,7 @@ _TOOLS: list[types.Tool] = [
                     "description": "Maximum number of documents to return (default 20)",
                     "default": 20,
                 },
+                "detail": {**_DETAIL_SCHEMA, "default": "8w"},
             },
         },
     ),
@@ -194,6 +221,7 @@ _TOOLS: list[types.Tool] = [
                     "description": "Number of results to return (default 5)",
                     "default": 5,
                 },
+                "detail": {**_DETAIL_SCHEMA, "default": "32w"},
             },
             "required": ["query"],
         },
@@ -260,7 +288,7 @@ def _format_results_as_text(
 
     unique_docs = len(groups)
     total_results = len(hits)
-    lines: list[str] = [f"Found {total_results} results across {unique_docs} documents.\n"]
+    lines = [f"Found {total_results} results across {unique_docs} documents.\n"]
 
     for _doc_path, ranked_hits in groups.items():
         # Use the first hit's citation for the title
@@ -272,8 +300,8 @@ def _format_results_as_text(
         # Look up doc for summary and topics
         doc = doc_lookup.get(first_hit.doc_id)
         if doc is not None:
-            if doc.summary_l1:
-                lines.append(f"Summary: {doc.summary_l1}")
+            if doc.summary_32w:
+                lines.append(f"Summary: {doc.summary_32w}")
             if doc.key_topics:
                 lines.append(f"Topics: {', '.join(doc.key_topics)}")
 
@@ -375,7 +403,7 @@ async def _handle_get_context(
         output = DocumentContextOutput(
             doc_id=doc.doc_id,
             title=doc.title,
-            summary=doc.summary_l1,
+            summary=_get_doc_summary(doc, inp.detail),
             sections=sections if sections else None,
         )
         return [types.TextContent(type="text", text=output.model_dump_json())]
@@ -394,7 +422,7 @@ async def _handle_get_context(
     output = DocumentContextOutput(
         doc_id=chunk.doc_id,
         title=doc.title if doc else None,
-        summary=doc.summary_l1 if doc else None,
+        summary=_get_doc_summary(doc, inp.detail) if doc else None,
         chunks=adjacent if adjacent else None,
     )
     return [types.TextContent(type="text", text=output.model_dump_json())]
@@ -418,6 +446,7 @@ async def _handle_list_recent(
         RecentDocumentEntry(
             doc_id=d.doc_id,
             title=d.title,
+            summary=_get_doc_summary(d, inp.detail),
             file_path=d.file_path,
             file_type=d.file_type,
             modified_at=d.modified_at,
@@ -521,8 +550,9 @@ async def _handle_quick_search(
         doc_count += 1
         title = doc.title or "Untitled"
         lines.append(f"## {title}")
-        if doc.summary_l1:
-            lines.append(f"Summary: {doc.summary_l1}")
+        summary = _get_doc_summary(doc, inp.detail)
+        if summary:
+            lines.append(f"Summary: {summary}")
         if doc.key_topics:
             lines.append(f"Topics: {', '.join(doc.key_topics)}")
         lines.append(f"Path: {doc.file_path}")

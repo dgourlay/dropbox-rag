@@ -100,10 +100,10 @@ class OnnxReranker:
         from transformers import AutoTokenizer
 
         logger.info("Downloading and converting bge-reranker-v2-m3 to ONNX...")
-        model = ORTModelForSequenceClassification.from_pretrained(  # type: ignore[no-untyped-call]
+        model = ORTModelForSequenceClassification.from_pretrained(
             "BAAI/bge-reranker-v2-m3", export=True
         )
-        model.save_pretrained(model_path)  # type: ignore[no-untyped-call]
+        model.save_pretrained(model_path)
 
         _tf_logger = logging.getLogger("transformers.tokenization_utils_base")
         prev_level = _tf_logger.level
@@ -112,8 +112,44 @@ class OnnxReranker:
             tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-reranker-v2-m3")  # type: ignore[no-untyped-call]
         finally:
             _tf_logger.setLevel(prev_level)
-        tokenizer.save_pretrained(model_path)  # type: ignore[no-untyped-call]
+        tokenizer.save_pretrained(model_path)
         logger.info("Reranker model exported to %s", model_path)
+
+    @staticmethod
+    def _enrich_text_for_reranking(hit: SearchHit) -> str:
+        """Build enriched text for cross-encoder input based on record type.
+
+        For summary hits, prepends title and relevant metadata to give the
+        cross-encoder more context. Does NOT modify hit.text.
+        """
+        from rag.types import RecordType
+
+        if hit.record_type == RecordType.DOCUMENT_SUMMARY:
+            parts: list[str] = []
+            title = hit.payload.get("title")
+            if title:
+                parts.append(title)
+            key_topics = hit.payload.get("key_topics")
+            if key_topics and isinstance(key_topics, list):
+                parts.append(", ".join(key_topics))
+            if parts:
+                return " | ".join(parts) + "\n" + hit.text
+            return hit.text
+
+        if hit.record_type == RecordType.SECTION_SUMMARY:
+            parts_s: list[str] = []
+            title = hit.payload.get("title")
+            if title:
+                parts_s.append(title)
+            heading = hit.payload.get("section_heading")
+            if heading:
+                parts_s.append(heading)
+            if parts_s:
+                return " | ".join(parts_s) + "\n" + hit.text
+            return hit.text
+
+        # chunk: use text as-is
+        return hit.text
 
     def rerank(self, query: str, candidates: list[SearchHit], top_k: int) -> list[SearchHit]:
         """Rerank candidates by cross-encoder relevance. Returns top_k sorted by score."""
@@ -131,7 +167,8 @@ class OnnxReranker:
 
         import numpy as np
 
-        pairs = [(query, hit.text) for hit in candidates]
+        rerank_texts = [self._enrich_text_for_reranking(hit) for hit in candidates]
+        pairs = [(query, text) for text in rerank_texts]
 
         encoded: Any = self._tokenizer(
             [p[0] for p in pairs],

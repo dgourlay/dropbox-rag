@@ -91,9 +91,14 @@ class FakeSummarizer:
 
     def summarize_document(self, text: str, title: str | None, file_type: str) -> SummarySuccess:
         return SummarySuccess(
-            summary_l1=f"Summary of {title or 'doc'}",
-            summary_l2=f"Document '{title}' covers key topics in {file_type} format.",
-            summary_l3=(
+            summary_8w=f"Summary of {title or 'doc'}",
+            summary_16w=f"Brief summary of {title or 'doc'} in {file_type}.",
+            summary_32w=f"Document '{title}' covers key topics in {file_type} format.",
+            summary_64w=(
+                f"Document '{title}' in {file_type} format covers key topics. "
+                f"Key content: {text[:50]}..."
+            ),
+            summary_128w=(
                 f"This is a detailed summary of '{title}'. "
                 f"The document is in {file_type} format. "
                 "It contains several sections with important information. "
@@ -107,8 +112,11 @@ class FakeSummarizer:
         self, text: str, heading: str | None, doc_context: str
     ) -> SectionSummarySuccess:
         return SectionSummarySuccess(
-            section_summary=f"Section '{heading or 'untitled'}' discusses: {text[:80]}...",
-            section_summary_l2=f"About {heading or 'content'}",
+            section_summary_8w=f"About {heading or 'content'}",
+            section_summary_32w=f"Section '{heading or 'untitled'}' discusses: {text[:80]}...",
+            section_summary_128w=(
+                f"Detailed: Section '{heading or 'untitled'}' discusses: {text[:150]}..."
+            ),
         )
 
 
@@ -263,17 +271,17 @@ class TestSummaryVectorsInQdrant:
         metadata_db: SqliteMetadataDB,
         db_conn: sqlite3.Connection,
     ) -> None:
-        """Documents should have summary_l1, key_topics populated."""
+        """Documents should have summary_8w, key_topics populated."""
         _runner, _success, _errors = indexed_with_summaries
 
         docs = db_conn.execute(
-            "SELECT doc_id, summary_l1, key_topics FROM documents WHERE summary_l1 IS NOT NULL"
+            "SELECT doc_id, summary_8w, key_topics FROM documents WHERE summary_8w IS NOT NULL"
         ).fetchall()
         assert len(docs) > 0, "Expected at least one document with summaries"
 
         for doc in docs:
-            assert doc["summary_l1"] is not None
-            assert doc["summary_l1"].startswith("Summary of")
+            assert doc["summary_8w"] is not None
+            assert doc["summary_8w"].startswith("Summary of")
 
 
 # --- Test 2: Prefetch lanes debug info ---
@@ -312,7 +320,7 @@ class TestLayerWeightingBroadVsSpecific:
         retrieval_engine: RetrievalEngine,
     ) -> None:
         """Broad and specific queries produce different layer_weights in debug_info."""
-        broad_result = retrieval_engine.search("what documents do I have", debug=True)
+        broad_result = retrieval_engine.search("give me a summary of everything", debug=True)
         specific_result = retrieval_engine.search(
             "truck gate check-in fraud rejection procedure step by step", debug=True
         )
@@ -480,15 +488,15 @@ class TestMCPQuickSearch:
         indexed_with_summaries: tuple[PipelineRunner, int, int],
         metadata_db: SqliteMetadataDB,
     ) -> None:
-        """Documents indexed with summarizer have summary_l1 and key_topics in DB."""
+        """Documents indexed with summarizer have summary_8w and key_topics in DB."""
         docs = metadata_db._conn.execute(
-            "SELECT doc_id, title, summary_l1, key_topics FROM documents "
-            "WHERE summary_l1 IS NOT NULL"
+            "SELECT doc_id, title, summary_8w, key_topics FROM documents "
+            "WHERE summary_8w IS NOT NULL"
         ).fetchall()
 
         assert len(docs) > 0
         for doc in docs:
-            assert doc["summary_l1"] is not None
+            assert doc["summary_8w"] is not None
             # Verify topics are stored (JSON list in SQLite)
             assert doc["key_topics"] is not None
 

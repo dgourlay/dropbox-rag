@@ -19,6 +19,7 @@ _KEYWORD_INDEX_FIELDS: list[str] = [
     "doc_type_guess",
     "section_id",
     "chunk_id",
+    "key_topics",
 ]
 
 _VECTOR_DIM = 1024

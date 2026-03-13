@@ -32,8 +32,9 @@ ParseError.model_rebuild()
 def _create_db() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    schema = Path(__file__).parent.parent / "migrations" / "001_initial.sql"
-    conn.executescript(schema.read_text())
+    migrations_dir = Path(__file__).parent.parent / "migrations"
+    conn.executescript((migrations_dir / "001_initial.sql").read_text())
+    conn.executescript((migrations_dir / "002_pyramid_summaries.sql").read_text())
     return conn
 
 

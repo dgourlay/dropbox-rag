@@ -73,9 +73,10 @@ class SqliteMetadataDB:
              file_type, modified_at, indexed_at, parser_version,
              raw_content_hash, normalized_content_hash, duplicate_of_doc_id,
              ocr_required, ocr_confidence, doc_type_guess, key_topics,
-             summary_l1, summary_l2, summary_l3, summary_content_hash,
+             summary_8w, summary_16w, summary_32w, summary_64w, summary_128w,
+             summary_content_hash,
              embedding_model_version, chunker_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(doc_id) DO UPDATE SET
                 file_path = excluded.file_path,
                 folder_path = excluded.folder_path,
@@ -92,9 +93,11 @@ class SqliteMetadataDB:
                 ocr_confidence = excluded.ocr_confidence,
                 doc_type_guess = excluded.doc_type_guess,
                 key_topics = excluded.key_topics,
-                summary_l1 = excluded.summary_l1,
-                summary_l2 = excluded.summary_l2,
-                summary_l3 = excluded.summary_l3,
+                summary_8w = excluded.summary_8w,
+                summary_16w = excluded.summary_16w,
+                summary_32w = excluded.summary_32w,
+                summary_64w = excluded.summary_64w,
+                summary_128w = excluded.summary_128w,
                 summary_content_hash = excluded.summary_content_hash,
                 embedding_model_version = excluded.embedding_model_version,
                 chunker_version = excluded.chunker_version""",
@@ -115,9 +118,11 @@ class SqliteMetadataDB:
                 doc.ocr_confidence,
                 doc.doc_type_guess,
                 json.dumps(doc.key_topics) if doc.key_topics is not None else None,
-                doc.summary_l1,
-                doc.summary_l2,
-                doc.summary_l3,
+                doc.summary_8w,
+                doc.summary_16w,
+                doc.summary_32w,
+                doc.summary_64w,
+                doc.summary_128w,
                 doc.summary_content_hash,
                 doc.embedding_model_version,
                 doc.chunker_version,
@@ -152,9 +157,9 @@ class SqliteMetadataDB:
         self._conn.executemany(
             """INSERT OR REPLACE INTO sections
             (section_id, doc_id, section_heading, section_order,
-             page_start, page_end, section_summary, section_summary_l2,
-             embedding_model_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             page_start, page_end, section_summary_8w, section_summary_32w,
+             section_summary_128w, embedding_model_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
                     s.section_id,
@@ -163,8 +168,9 @@ class SqliteMetadataDB:
                     s.section_order,
                     s.page_start,
                     s.page_end,
-                    s.section_summary,
-                    s.section_summary_l2,
+                    s.section_summary_8w,
+                    s.section_summary_32w,
+                    s.section_summary_128w,
                     s.embedding_model_version,
                 )
                 for s in sections
@@ -219,6 +225,13 @@ class SqliteMetadataDB:
         if row is None:
             return None
         return _row_to_chunk(row)
+
+    def get_chunks_by_section(self, section_id: str) -> list[ChunkRow]:
+        rows = self._conn.execute(
+            "SELECT * FROM chunks WHERE section_id = ? ORDER BY chunk_order",
+            (section_id,),
+        ).fetchall()
+        return [_row_to_chunk(r) for r in rows]
 
     def get_adjacent_chunks(self, doc_id: str, chunk_order: int, window: int) -> list[ChunkRow]:
         rows = self._conn.execute(
@@ -345,9 +358,11 @@ def _row_to_document(row: sqlite3.Row) -> DocumentRow:
         ocr_confidence=row["ocr_confidence"],
         doc_type_guess=row["doc_type_guess"],
         key_topics=key_topics,
-        summary_l1=row["summary_l1"],
-        summary_l2=row["summary_l2"],
-        summary_l3=row["summary_l3"],
+        summary_8w=row["summary_8w"],
+        summary_16w=row["summary_16w"],
+        summary_32w=row["summary_32w"],
+        summary_64w=row["summary_64w"],
+        summary_128w=row["summary_128w"],
         summary_content_hash=row["summary_content_hash"],
         embedding_model_version=row["embedding_model_version"],
         chunker_version=row["chunker_version"],
@@ -364,8 +379,9 @@ def _row_to_section(row: sqlite3.Row) -> SectionRow:
         section_order=row["section_order"],
         page_start=row["page_start"],
         page_end=row["page_end"],
-        section_summary=row["section_summary"],
-        section_summary_l2=row["section_summary_l2"],
+        section_summary_8w=row["section_summary_8w"],
+        section_summary_32w=row["section_summary_32w"],
+        section_summary_128w=row["section_summary_128w"],
         embedding_model_version=row["embedding_model_version"],
     )
 

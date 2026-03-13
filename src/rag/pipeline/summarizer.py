@@ -43,11 +43,15 @@ def get_cli_preset(command: str) -> tuple[list[str], str] | None:
 
 DOCUMENT_PROMPT_TEMPLATE = """\
 Analyze the following document and return a JSON object with these fields:
-- "summary_l1": A short phrase (3-8 words) describing the document
-- "summary_l2": 1-2 sentences summarizing the document
-- "summary_l3": A paragraph (3-5 sentences) summarizing the key points
+- "summary_8w": A short phrase (~8 words) describing the document
+- "summary_16w": A single sentence (~16 words) capturing the main point
+- "summary_32w": 1-2 sentences (~32 words) summarizing the document
+- "summary_64w": A short paragraph (~64 words) covering the key points
+- "summary_128w": A detailed paragraph (~128 words) summarizing the document comprehensively
 - "key_topics": A list of 3-7 key topic strings
 - "doc_type_guess": The document type (e.g. "report", "meeting notes", "readme", "plan")
+
+Each summary level must be independently understandable (not building on the previous level).
 
 Return ONLY the JSON object, no other text.
 
@@ -60,8 +64,11 @@ Document excerpt:
 
 SECTION_PROMPT_TEMPLATE = """\
 Summarize the following section from a document. Return a JSON object with:
-- "section_summary": 1-2 sentences summarizing this section
-- "section_summary_l2": A short phrase (3-8 words) for this section (optional, null ok)
+- "section_summary_8w": A short phrase (~8 words) for this section
+- "section_summary_32w": 1-2 sentences (~32 words) summarizing this section
+- "section_summary_128w": A detailed paragraph (~128 words) covering the section's key points
+
+Each summary level must be independently understandable (not building on the previous level).
 
 Return ONLY the JSON object, no other text.
 
@@ -184,11 +191,12 @@ class CliSummarizer:
         """Run the LLM CLI with the given prompt. Returns cleaned stdout or None."""
         input_mode = self._config.input_mode
 
+        extra_args = self._config.args or []
         if input_mode == "arg":
-            cmd = [self._config.command, *self._config.args, prompt]
+            cmd = [self._config.command, *extra_args, prompt]
             stdin_text = None
         else:
-            cmd = [self._config.command, *self._config.args]
+            cmd = [self._config.command, *extra_args]
             stdin_text = prompt
 
         env = self._cli_env()

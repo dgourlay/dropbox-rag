@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,7 @@ from rag.types import (
 )
 
 if TYPE_CHECKING:
+    from rag.config import RetrievalConfig, SummarizationConfig
     from rag.protocols import Embedder, Reranker, VectorStore
     from rag.retrieval.citations import CitationAssembler
 
@@ -35,29 +37,34 @@ LAYER_WEIGHTS: dict[str, dict[str, float]] = {
         RecordType.SECTION_SUMMARY: 0.9,
         RecordType.CHUNK: 1.0,
     },
+    "navigational": {
+        RecordType.DOCUMENT_SUMMARY: 1.0,
+        RecordType.SECTION_SUMMARY: 1.4,
+        RecordType.CHUNK: 1.0,
+    },
 }
 
 # Recency boost parameters
 RECENCY_HALF_LIFE_DAYS = 90
-RECENCY_MAX_BOOST = 0.3
+RECENCY_MAX_BOOST = 0.15
 
 
 def rrf_fuse(
-    dense_hits: list[SearchHit],
-    keyword_hits: list[SearchHit],
+    ranked_lists: list[list[SearchHit]],
 ) -> list[SearchHit]:
-    """Reciprocal Rank Fusion: score = Σ 1/(k + rank_i)."""
+    """Reciprocal Rank Fusion over multiple ranked lists.
+
+    Each list contributes independently with ranks starting at 1.
+    score = Σ 1/(k + rank_i) across all lists containing the hit.
+    """
     scores: dict[str, float] = {}
     hit_map: dict[str, SearchHit] = {}
 
-    for rank, hit in enumerate(dense_hits):
-        scores[hit.point_id] = scores.get(hit.point_id, 0.0) + 1.0 / (RRF_K + rank + 1)
-        hit_map[hit.point_id] = hit
-
-    for rank, hit in enumerate(keyword_hits):
-        scores[hit.point_id] = scores.get(hit.point_id, 0.0) + 1.0 / (RRF_K + rank + 1)
-        if hit.point_id not in hit_map:
-            hit_map[hit.point_id] = hit
+    for ranked_list in ranked_lists:
+        for rank, hit in enumerate(ranked_list):
+            scores[hit.point_id] = scores.get(hit.point_id, 0.0) + 1.0 / (RRF_K + rank + 1)
+            if hit.point_id not in hit_map:
+                hit_map[hit.point_id] = hit
 
     sorted_ids = sorted(scores, key=lambda pid: scores[pid], reverse=True)
 
@@ -101,7 +108,7 @@ def apply_recency_boost(
     hits: list[SearchHit],
     now: datetime | None = None,
 ) -> list[SearchHit]:
-    """Apply exponential-decay recency boost. 90-day half-life, max 30% influence."""
+    """Apply exponential-decay recency boost. 90-day half-life, max 15% influence."""
     if now is None:
         now = datetime.now(tz=UTC)
 
@@ -146,6 +153,8 @@ class RetrievalEngine:
         citation_assembler: CitationAssembler,
         top_k_candidates: int = 30,
         top_k_final: int = 10,
+        retrieval_config: RetrievalConfig | None = None,
+        summarization_config: SummarizationConfig | None = None,
     ) -> None:
         self._vector_store = vector_store
         self._embedder = embedder
@@ -153,6 +162,8 @@ class RetrievalEngine:
         self._citations = citation_assembler
         self._top_k_candidates = top_k_candidates
         self._top_k_final = top_k_final
+        self._retrieval_config = retrieval_config
+        self._summarization_config = summarization_config
 
     def search(
         self,
@@ -180,42 +191,57 @@ class RetrievalEngine:
                 file_type=effective_filters.file_type,
             )
 
-        # 2. Embed query
+        # 2. Embed query (with optional HyDE for broad queries)
         t0 = time.monotonic()
-        query_vector = self._embedder.embed_query(query)
+        hyde_vector = self._maybe_apply_hyde(query, analysis.classification)
+        hyde_applied = hyde_vector is not None
+        query_vector: list[float] = (
+            hyde_vector if hyde_vector is not None else self._embedder.embed_query(query)
+        )
         if debug:
             debug_info["embed_ms"] = int((time.monotonic() - t0) * 1000)
+            debug_info["hyde_applied"] = hyde_applied
 
-        # 3. Dense search — 3 prefetch lanes by record_type
+        # 3-4. Parallel prefetch: 3 dense lanes + keyword search
         t0 = time.monotonic()
-        dense_doc_summaries = self._vector_store.query_dense(
-            query_vector, effective_filters, 20, record_type=RecordType.DOCUMENT_SUMMARY
-        )
-        dense_section_summaries = self._vector_store.query_dense(
-            query_vector, effective_filters, 20, record_type=RecordType.SECTION_SUMMARY
-        )
-        dense_chunks = self._vector_store.query_dense(
-            query_vector, effective_filters, 30, record_type=RecordType.CHUNK
-        )
-        dense_hits = dense_doc_summaries + dense_section_summaries + dense_chunks
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            fut_doc_summaries = executor.submit(
+                self._vector_store.query_dense,
+                query_vector, effective_filters, 20, RecordType.DOCUMENT_SUMMARY,
+            )
+            fut_section_summaries = executor.submit(
+                self._vector_store.query_dense,
+                query_vector, effective_filters, 20, RecordType.SECTION_SUMMARY,
+            )
+            fut_chunks = executor.submit(
+                self._vector_store.query_dense,
+                query_vector, effective_filters, 30, RecordType.CHUNK,
+            )
+            fut_keyword = executor.submit(
+                self._vector_store.query_keyword,
+                query, effective_filters, self._top_k_candidates,
+            )
+
+            dense_doc_summaries = fut_doc_summaries.result()
+            dense_section_summaries = fut_section_summaries.result()
+            dense_chunks = fut_chunks.result()
+            keyword_hits = fut_keyword.result()
+
+        prefetch_wall_ms = int((time.monotonic() - t0) * 1000)
         if debug:
-            debug_info["dense_ms"] = int((time.monotonic() - t0) * 1000)
-            debug_info["dense_count"] = len(dense_hits)
+            debug_info["prefetch_ms"] = prefetch_wall_ms
             debug_info["dense_doc_summary_count"] = len(dense_doc_summaries)
             debug_info["dense_section_summary_count"] = len(dense_section_summaries)
             debug_info["dense_chunk_count"] = len(dense_chunks)
-
-        # 4. Keyword search (chunks only)
-        t0 = time.monotonic()
-        keyword_hits = self._vector_store.query_keyword(
-            query, effective_filters, self._top_k_candidates
-        )
-        if debug:
-            debug_info["keyword_ms"] = int((time.monotonic() - t0) * 1000)
+            debug_info["dense_count"] = (
+                len(dense_doc_summaries) + len(dense_section_summaries) + len(dense_chunks)
+            )
             debug_info["keyword_count"] = len(keyword_hits)
 
-        # 5. RRF fusion
-        fused = rrf_fuse(dense_hits, keyword_hits)
+        # 5. RRF fusion (4 independent ranked lists)
+        fused = rrf_fuse([
+            dense_doc_summaries, dense_section_summaries, dense_chunks, keyword_hits,
+        ])
         if debug:
             debug_info["fused_count"] = len(fused)
 
@@ -226,21 +252,21 @@ class RetrievalEngine:
                 analysis.classification, LAYER_WEIGHTS["specific"]
             )
 
-        # 7. Rerank
+        # 7. Recency boost (before reranker so reranker has final say)
+        boosted = apply_recency_boost(weighted)
+        if debug:
+            debug_info["recency_applied"] = True
+
+        # 8. Rerank
         t0 = time.monotonic()
         reranked = self._reranker.rerank(
-            query, weighted[: self._top_k_candidates], effective_top_k
+            query, boosted[: self._top_k_candidates], effective_top_k
         )
         if debug:
             debug_info["rerank_ms"] = int((time.monotonic() - t0) * 1000)
 
-        # 8. Recency boost
-        boosted = apply_recency_boost(reranked)
-        if debug:
-            debug_info["recency_applied"] = True
-
         # 9. Assemble citations
-        cited = self._citations.assemble_citations(boosted)
+        cited = self._citations.assemble_citations(reranked)
 
         if debug:
             debug_info["total_ms"] = int((time.monotonic() - start) * 1000)
@@ -250,6 +276,22 @@ class RetrievalEngine:
             query_classification=analysis.classification,
             debug_info=debug_info if debug else None,
         )
+
+    def _maybe_apply_hyde(self, query: str, classification: str) -> list[float] | None:
+        """Apply HyDE for broad queries if enabled. Returns embedding or None."""
+        if classification != "broad":
+            return None
+        if self._retrieval_config is None or not self._retrieval_config.hyde_enabled:
+            return None
+        if self._summarization_config is None:
+            return None
+
+        from rag.retrieval.hyde import hyde_embed
+
+        result = hyde_embed(query, self._embedder, self._summarization_config)
+        if result is not None:
+            logger.debug("HyDE applied for broad query")
+        return result
 
     async def async_search(
         self,

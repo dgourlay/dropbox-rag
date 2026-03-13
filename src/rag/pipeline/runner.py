@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from rag.pipeline.chunker import chunk_document
 from rag.pipeline.classifier import classify
@@ -936,14 +936,17 @@ class PipelineRunner:
 
         doc_summary_text: str | None = None
         doc_type_guess: str | None = None
+        doc_key_topics: list[str] | None = None
         if isinstance(doc_result, SummarySuccess):
             existing_doc = self._db.get_document(doc_id)
             if existing_doc is not None:
                 updated = existing_doc.model_copy(
                     update={
-                        "summary_l1": doc_result.summary_l1,
-                        "summary_l2": doc_result.summary_l2,
-                        "summary_l3": doc_result.summary_l3,
+                        "summary_8w": doc_result.summary_8w,
+                        "summary_16w": doc_result.summary_16w,
+                        "summary_32w": doc_result.summary_32w,
+                        "summary_64w": doc_result.summary_64w,
+                        "summary_128w": doc_result.summary_128w,
                         "key_topics": doc_result.key_topics,
                         "doc_type_guess": doc_result.doc_type_guess,
                         "summary_content_hash": normalized.normalized_content_hash,
@@ -951,8 +954,9 @@ class PipelineRunner:
                 )
                 self._db.upsert_document(updated)
 
-            doc_summary_text = doc_result.summary_l3
+            doc_summary_text = doc_result.summary_128w
             doc_type_guess = doc_result.doc_type_guess
+            doc_key_topics = doc_result.key_topics
             logger.info("Generated document summary for %s", file_path)
         else:
             logger.warning("Document summarization failed for %s: %s", file_path, doc_result.error)
@@ -1003,8 +1007,9 @@ class PipelineRunner:
                     # Update section row with summary
                     updated_section = section_row.model_copy(
                         update={
-                            "section_summary": sec_result.section_summary,
-                            "section_summary_l2": sec_result.section_summary_l2,
+                            "section_summary_8w": sec_result.section_summary_8w,
+                            "section_summary_32w": sec_result.section_summary_32w,
+                            "section_summary_128w": sec_result.section_summary_128w,
                             "embedding_model_version": self._embedder.model_version,
                         }
                     )
@@ -1036,7 +1041,7 @@ class PipelineRunner:
         section_results.sort(key=lambda t: t[2])
         for sec_result, section_row, order in section_results:
             embed_entries.append({
-                "text": sec_result.section_summary,
+                "text": sec_result.section_summary_128w,
                 "type": "section",
                 "section_row": section_row,
                 "order": order,
@@ -1060,7 +1065,7 @@ class PipelineRunner:
                         vector=vector,
                         payload=QdrantPayloadModel(
                             record_type=RecordType.DOCUMENT_SUMMARY,
-                            summary_level="l3",
+                            summary_level="128w",
                             doc_id=doc_id,
                             title=title,
                             file_path=file_path,
@@ -1071,13 +1076,14 @@ class PipelineRunner:
                             doc_type_guess=(
                                 str(entry["doc_type_guess"]) if entry["doc_type_guess"] else None
                             ),
+                            key_topics=doc_key_topics,
                             text=str(entry["text"]),
                         ),
                     )
                 )
             else:
-                sec_row = entry["section_row"]
-                order = entry["order"]
+                sec_row = cast("SectionRow", entry["section_row"])
+                order = int(str(entry["order"]))
                 sec_point_id = str(
                     uuid.uuid5(NAMESPACE_RAG, f"{doc_id}:section_summary:{order}")
                 )
@@ -1088,7 +1094,7 @@ class PipelineRunner:
                         payload=QdrantPayloadModel(
                             record_type=RecordType.SECTION_SUMMARY,
                             doc_id=doc_id,
-                            section_id=sec_row.section_id,  # type: ignore[union-attr]
+                            section_id=sec_row.section_id,
                             title=title,
                             file_path=file_path,
                             folder_path=folder_path,
@@ -1096,6 +1102,7 @@ class PipelineRunner:
                             file_type=file_type,
                             modified_at=modified_at,
                             section_heading=str(entry["heading"]) if entry["heading"] else None,
+                            key_topics=doc_key_topics,
                             text=str(entry["text"]),
                         ),
                     )
