@@ -195,7 +195,7 @@ const components = {
     desc: "stdio + HTTP · 5 tools for Claude",
     details: {
       purpose:
-        "Expose retrieval as MCP tools for Claude Desktop, Claude Code, and Kiro. Runs as stdio subprocess (default) or Streamable HTTP server.",
+        "Expose retrieval as MCP tools for Claude Desktop, Claude Code, Codex, and Kiro. Runs as stdio subprocess (default) or Streamable HTTP server.",
       how: [
         "search_documents: full hybrid retrieval, format=text|json",
         "quick_search: lightweight doc-level scan (titles, summaries, topics) · detail param for zoom level",
@@ -301,7 +301,7 @@ const cliCommands = [
   { cmd: "rag status", desc: "Rich terminal dashboard", detail: "Documents, chunks, vectors, per-folder breakdown, recent documents table, MCP health checks, RAG liveness test." },
   { cmd: "rag doctor", desc: "Health check", detail: "Validates config, Qdrant connectivity, embedding model cache, folder accessibility, and OCR availability." },
   { cmd: "rag search \"query\"", desc: "CLI search for testing", detail: "Runs the full retrieval pipeline from the terminal. Supports --debug for stage timing and --top-k for result count." },
-  { cmd: "rag mcp-config --print", desc: "MCP config snippet", detail: "Prints the JSON config block to paste into Claude Desktop or Claude Code MCP settings." },
+  { cmd: "rag mcp-config --print", desc: "MCP config snippet", detail: "Prints the JSON config block to paste into Claude Desktop or Claude Code MCP settings. For Codex, use: codex mcp add local-rag -- python -m rag.cli serve" },
 ];
 
 const retrievalStages = [
@@ -470,7 +470,7 @@ window.__App = function App() {
             local-rag <span style={{ fontWeight: 400, color: C.muted }}>·</span> Derek's Local RAG System
           </h1>
           <p style={{ color: C.muted, fontSize: 13, margin: "4px 0 0" }}>
-            Docling · BGE-M3 · Qdrant · SQLite · MCP for Claude Code, Kiro & Codex
+            Docling · BGE-M3 · Qdrant · SQLite · MCP for Claude Code, Codex & Kiro
           </p>
         </div>
 
@@ -710,10 +710,11 @@ rag search "your query" # test it from the terminal`}
                 indexing health — all through natural conversation. No manual copy-paste, no
                 file uploads, no context window limits.
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
                 {[
                   { client: "Claude Code", setup: "rag mcp-config --install claude-code", icon: "⌨️" },
                   { client: "Claude Desktop", setup: "rag mcp-config --install claude-desktop", icon: "🖥️" },
+                  { client: "Codex", setup: "codex mcp add local-rag -- python -m rag.cli serve", icon: "🧬" },
                   { client: "Kiro", setup: "rag mcp-config --install kiro", icon: "🚀" },
                 ].map((c, i) => (
                   <div
