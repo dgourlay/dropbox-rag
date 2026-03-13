@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int, str, ProcessingOutcome, str], None]
+StartCallback = Callable[[int, int, str], None]
 
 
 @dataclass
@@ -375,6 +376,7 @@ class PipelineRunner:
         self,
         events: list[FileEvent],
         progress: ProgressCallback | None = None,
+        on_start: StartCallback | None = None,
     ) -> dict[ProcessingOutcome, int]:
         """Process a batch of file events with pipeline parallelism.
 
@@ -396,7 +398,7 @@ class PipelineRunner:
         self._start_background_worker()
 
         try:
-            return self._process_batch_parallel(events, progress)
+            return self._process_batch_parallel(events, progress, on_start)
         finally:
             self._stop_background_worker()
 
@@ -454,6 +456,7 @@ class PipelineRunner:
         self,
         events: list[FileEvent],
         progress: ProgressCallback | None,
+        on_start: StartCallback | None = None,
     ) -> dict[ProcessingOutcome, int]:
         """Core implementation of the parallel batch pipeline."""
         counts: dict[ProcessingOutcome, int] = dict.fromkeys(ProcessingOutcome, 0)
@@ -486,6 +489,7 @@ class PipelineRunner:
 
         def _parser_worker() -> None:
             """Parser thread: classify -> parse -> normalize -> chunk."""
+            parse_idx = 0
             for event in eligible_events:
                 try:
                     # Handle deletions immediately as skip results
@@ -494,6 +498,13 @@ class PipelineRunner:
                             event=event, error_msg="__deleted__",
                         ))
                         continue
+
+                    parse_idx += 1
+                    if on_start:
+                        on_start(
+                            parse_idx, len(eligible_events),
+                            Path(event.file_path).name,
+                        )
 
                     item = self._parse_stage(event)
                     q.put(item)

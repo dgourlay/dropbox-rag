@@ -362,7 +362,12 @@ def _run_index(config: AppConfig, events: list[FileEvent]) -> None:
     if not events:
         return
 
+    click.echo("Loading models and connecting to Qdrant...", nl=False)
     _db, runner, _engine = _init_components(config)
+    click.echo(" done.")
+
+    def on_start(current: int, total: int, name: str) -> None:
+        click.echo(f"  [{current}/{total}] {name} — parsing...", nl=False)
 
     def progress(
         current: int, total: int, name: str, outcome: ProcessingOutcome, detail: str
@@ -376,7 +381,7 @@ def _run_index(config: AppConfig, events: list[FileEvent]) -> None:
         }[outcome]
         click.echo(f"  [{current}/{total}] {name} — {label} ({detail})")
 
-    counts = runner.process_batch(events, progress=progress)
+    counts = runner.process_batch(events, progress=progress, on_start=on_start)
 
     parts: list[str] = []
     if counts[ProcessingOutcome.INDEXED]:
