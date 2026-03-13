@@ -13,7 +13,7 @@ Local RAG system that indexes documents from configured filesystem folders, buil
 
 ## Architecture
 
-Single Python process handles: filesystem watching (watchdog) → Docling parsing (in subprocess for memory isolation) → normalization → dedup → chunking → embedding (local BGE-M3, 1024-dim) → summarization (LLM CLI) → Qdrant indexing. Summarization shells out to a user-configured LLM CLI tool (claude, kiro-cli, etc.) and stores document_summary and section_summary vectors in Qdrant. MCP server runs via stdio for Claude Desktop or Streamable HTTP. MCP handlers are async; CPU-bound ops dispatched via asyncio.to_thread(). Retrieval pipeline: 3-lane prefetch (document_summary top 20, section_summary top 20, chunks top 30) → RRF fusion with layer weighting (broad/specific query classification) → recency boost (90-day half-life, max 30% influence) → ONNX cross-encoder reranker → cited evidence returned to calling LLM.
+Single Python process handles: filesystem watching (watchdog) → Docling parsing (in subprocess for memory isolation) → normalization → dedup → chunking → embedding (local BGE-M3, 1024-dim) → summarization (LLM CLI) → Qdrant indexing. Summarization shells out to a user-configured LLM CLI tool (claude, kiro-cli, etc.) and generates geometric pyramid summaries — 5 document levels (8w/16w/32w/64w/128w) and 3 section levels (8w/32w/128w). Only the 128w summaries are embedded as vectors in Qdrant; shorter levels serve display and enumeration. MCP server runs via stdio for Claude Desktop or Streamable HTTP. MCP handlers are async; CPU-bound ops dispatched via asyncio.to_thread(). Retrieval pipeline: 3-lane dense prefetch (document_summary top 20, section_summary top 20, chunks top 30) + keyword search, run in parallel via ThreadPoolExecutor → RRF fusion over 4 separate ranked lists (doc_summaries, section_summaries, chunks, keywords) with layer weighting (broad/specific/navigational query classification, multi-signal scoring) → recency boost (90-day half-life, max 15% influence) → reranker enrichment (summary hits get title+topics prepended) → ONNX cross-encoder reranker → citation expansion (summary hits expand to grounded source chunks) → cited evidence returned to calling LLM. HyDE (Hypothetical Document Embeddings) generates a hypothetical answer via LLM CLI for broad queries, embedding that instead of the raw query (configurable via `hyde_enabled`).
 
 ## Tech Stack
 
@@ -51,6 +51,7 @@ src/rag/
     parser/            # Docling wrapper (PDF/DOCX, subprocess) + text fallback (TXT/MD)
     summarizer.py      # CliSummarizer: LLM CLI for doc/section summaries (step 12)
   retrieval/           # 3-lane prefetch + RRF fusion + layer weighting + recency boost + reranker + citations
+    hyde.py            # HyDE: hypothetical document embeddings for broad queries
   mcp/                 # MCP server (async) + tool definitions (5 tools)
   db/                  # SQLite connection + Qdrant client, models, migrations
 migrations/            # SQL schema files
@@ -90,8 +91,11 @@ rag mcp-config --print            # Print MCP config JSON snippet
 - Docling parsing runs in child subprocess (multiprocessing) for memory isolation
 - MCP stdio servers: never write to stdout (corrupts JSON-RPC); use stderr for logging
 - SQLite: `check_same_thread=False` for async MCP handler access
-- Retrieval: 3-lane prefetch by record_type, layer weighting by query classification, recency boost (90-day half-life)
+- Pyramid summaries: document levels summary_8w/16w/32w/64w/128w, section levels section_summary_8w/32w/128w. Only 128w embedded as vectors.
+- Retrieval: 3-lane dense prefetch + keyword search in parallel (ThreadPoolExecutor), RRF fusion over 4 ranked lists, query classification (broad/specific/navigational), recency boost (90-day half-life, max 15%), reranker enrichment for summary hits, citation expansion for summary hits, HyDE for broad queries
+- key_topics stored in Qdrant payload and keyword-indexed
 - MCP tools: 5 tools (search_documents, quick_search, get_document_context, list_recent_documents, get_sync_status)
+- MCP tools `detail` parameter for progressive disclosure: list_recent_documents default "8w", quick_search default "32w", get_document_context default "128w"
 - search_documents `format` parameter: "text" (default, LLM-friendly) or "json" (raw structured data)
 
 ## Testing

@@ -210,9 +210,11 @@ class Parser(Protocol):
 ```python
 class SummarySuccess(BaseModel):
     status: Literal["success"] = "success"
-    summary_l1: str
-    summary_l2: str
-    summary_l3: str
+    summary_8w: str    # ~8 words
+    summary_16w: str   # ~16 words
+    summary_32w: str   # ~32 words
+    summary_64w: str   # ~64 words
+    summary_128w: str  # ~128 words (embedded as vector)
     key_topics: list[str]
     doc_type_guess: str | None = None
 

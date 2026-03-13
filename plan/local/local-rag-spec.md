@@ -65,7 +65,8 @@ All Python code in this project must follow strict typing conventions to enable 
 
 # Literal for small sets used in Pydantic field annotations
 ProcessStatus = Literal["pending", "processing", "done", "error", "poison"]
-SummaryLevel = Literal["l1", "l2", "l3"]
+SummaryLevel = Literal["8w", "16w", "32w", "64w", "128w"]
+SectionSummaryLevel = Literal["8w", "32w", "128w"]
 
 # StrEnum for sets used in iteration, runtime logic, or 3+ places
 class RecordType(StrEnum):
@@ -235,13 +236,14 @@ class QdrantPayloadReadBack(TypedDict):
     folder_ancestors: list[str]
     file_type: str
     modified_at: str
+    key_topics: list[str] | None
     text: str
 
 # --- Pydantic model for Qdrant payload construction ---
 
 class QdrantPayloadModel(BaseModel):
     record_type: RecordType
-    summary_level: SummaryLevel | None = None
+    summary_level: SummaryLevel | SectionSummaryLevel | None = None
     doc_id: str
     section_id: str | None = None
     chunk_id: str | None = None
@@ -251,15 +253,18 @@ class QdrantPayloadModel(BaseModel):
     folder_ancestors: list[str]
     file_type: FileType
     modified_at: str
+    key_topics: list[str] | None = None
     text: str
 
 # --- Discriminated union Result types ---
 
 class SummarySuccess(BaseModel):
     status: Literal["success"] = "success"
-    summary_l1: str
-    summary_l2: str
-    summary_l3: str
+    summary_8w: str    # ~8 words (title-like phrase)
+    summary_16w: str   # ~16 words (one-liner)
+    summary_32w: str   # ~32 words (1-2 sentences)
+    summary_64w: str   # ~64 words (short paragraph)
+    summary_128w: str  # ~128 words (full paragraph — embedded as vector)
     key_topics: list[str]
     doc_type_guess: str | None = None
 
@@ -426,6 +431,10 @@ args = ["--print", "--max-tokens", "2048"]
 # Set to false to skip summaries entirely (chunks + section headings only)
 timeout_seconds = 60
 
+[retrieval]
+# Retrieval pipeline settings
+hyde_enabled = true  # Generate hypothetical answers for broad queries (requires LLM CLI)
+
 [mcp]
 # MCP server configuration
 transport = "stdio"
@@ -493,12 +502,16 @@ class WatcherConfig(BaseModel):
     use_polling: bool = False
     batch_window_seconds: int = 10
 
+class RetrievalConfig(BaseModel):
+    hyde_enabled: bool = True  # HyDE for broad queries (requires LLM CLI)
+
 class AppConfig(BaseModel):
     folders: FoldersConfig  # required
     database: DatabaseConfig = DatabaseConfig()
     qdrant: QdrantConfig = QdrantConfig()
     embedding: EmbeddingConfig = EmbeddingConfig()
     reranker: RerankerConfig = RerankerConfig()
+    retrieval: RetrievalConfig = RetrievalConfig()
     summarization: SummarizationConfig = SummarizationConfig()
     mcp: MCPConfig = MCPConfig()
     watcher: WatcherConfig = WatcherConfig()
@@ -558,9 +571,11 @@ CREATE TABLE documents (
     ocr_confidence          REAL,
     doc_type_guess          TEXT,
     key_topics              TEXT,  -- JSON array
-    summary_l1              TEXT,
-    summary_l2              TEXT,
-    summary_l3              TEXT,
+    summary_8w              TEXT,
+    summary_16w             TEXT,
+    summary_32w             TEXT,
+    summary_64w             TEXT,
+    summary_128w            TEXT,
     summary_content_hash    TEXT,
     embedding_model_version TEXT,
     chunker_version         TEXT
@@ -576,8 +591,9 @@ CREATE TABLE sections (
     section_order       INTEGER NOT NULL,
     page_start          INTEGER,
     page_end            INTEGER,
-    section_summary     TEXT,
-    section_summary_l2  TEXT,
+    section_summary_8w  TEXT,
+    section_summary_32w TEXT,
+    section_summary_128w TEXT,
     embedding_model_version TEXT
 );
 CREATE INDEX idx_section_doc ON sections (doc_id);
@@ -627,7 +643,7 @@ CREATE INDEX idx_proclog_doc ON processing_log (doc_id);
 
 Single collection `documents` with cosine vectors, **1024-dim** (BGE-M3).
 
-Payload indices: record_type (keyword), summary_level (keyword), doc_id (keyword), folder_path (keyword), file_type (keyword), modified_at (datetime), file_path (keyword), doc_type_guess (keyword).
+Payload indices: record_type (keyword), summary_level (keyword), doc_id (keyword), folder_path (keyword), file_type (keyword), modified_at (datetime), file_path (keyword), doc_type_guess (keyword), key_topics (keyword).
 
 Full-text index on `text` field (word tokenizer, min 3 / max 20 chars, lowercase).
 
@@ -636,7 +652,7 @@ Full-text index on `text` field (word tokenizer, min 3 / max 20 chars, lowercase
 ```json
 {
   "record_type": "chunk | section_summary | document_summary",
-  "summary_level": "l1 | l2 | l3 | null",
+  "summary_level": "8w | 16w | 32w | 64w | 128w | null",
   "doc_id": "uuid",
   "section_id": "uuid | null",
   "chunk_id": "uuid | null",
@@ -651,6 +667,7 @@ Full-text index on `text` field (word tokenizer, min 3 / max 20 chars, lowercase
   "section_heading": "Revenue Analysis",
   "chunk_order": 7,
   "doc_type_guess": "quarterly_review",
+  "key_topics": ["revenue", "operational metrics", "Q3 performance"],
   "ocr_confidence": null,
   "token_count": 487,
   "citation_label": "Q3-review.pdf § Revenue Analysis, pp. 12-14",
@@ -696,15 +713,15 @@ SimHash near-dedup deferred (same as cloud Phase 4).
 
 Same structured output as cloud, different backend. Instead of Bedrock Haiku API call, shell out to configured LLM CLI tool.
 
-**Per-document summary call:**
-1. Construct prompt requesting structured JSON: summary_l1 (phrase), summary_l2 (1-2 sentences), summary_l3 (paragraph), key_topics (list), doc_type_guess
+**Per-document summary call (geometric pyramid):**
+1. Construct prompt requesting structured JSON with 5 geometric summary levels: summary_8w (~8 words, title-like phrase), summary_16w (~16 words, one-liner), summary_32w (~32 words, 1-2 sentences), summary_64w (~64 words, short paragraph), summary_128w (~128 words, full paragraph), plus key_topics (list) and doc_type_guess. Only the 128w level is embedded as a vector in Qdrant; shorter levels serve display and progressive disclosure in MCP tools.
 2. Truncate document excerpt to <5000 characters to avoid known CLI stdin size bugs (e.g., anthropics/claude-code#7263). For larger documents, write prompt to a temporary file and pass as argument.
 3. Pipe prompt to CLI stdin, capture both stdout and stderr
 4. Parse JSON from stdout with robust extraction: try direct `json.loads()`, fall back to regex extraction of JSON from markdown-fenced output, then skip summarization for this doc
 5. Check exit code. Timeout after configured seconds (default 60), retry once with exponential backoff, then skip summaries for this doc
 6. Validate parsed JSON via `SummarySuccess.model_validate()` (Pydantic runtime validation on untrusted CLI output)
 
-**Section summaries:** One CLI call per major section (H1/H2 boundary).
+**Section summaries (geometric pyramid):** One CLI call per major section (H1/H2 boundary), producing 3 levels: section_summary_8w (~8 words), section_summary_32w (~32 words), section_summary_128w (~128 words). Only the 128w level is embedded as a vector.
 
 **Caching:** All summaries cached by normalized_content_hash in SQLite. If document content hasn't changed, skip summarization entirely.
 
@@ -734,19 +751,21 @@ Identical to cloud spec. All stages run behind a single `search_documents` MCP t
 
 ### 7.1 Pipeline
 
-1. **Query analysis** — broad vs specific classification, extract folder/date filter intent, extract keywords
-2. **Embed query** — BGE-M3 (same model as indexing)
-3. **Dense search** — Qdrant cosine similarity via `query_points()` with `prefetch` parameter: doc summaries (top 20), section summaries (top 20), chunks (top 30), with metadata filters. Note: `search()` was removed in qdrant-client v1.17; all search operations use the unified `query_points()` API.
-4. **Keyword search** — Qdrant built-in text index on "text" field, chunks top 30, also via `query_points()`
-5. **RRF fusion** — score = Σ 1/(60 + rank_i), merge dense + keyword, apply layer weighting
-6. **Cross-encoder rerank** — bge-reranker-v2-m3 ONNX, top 30 → top 10 (~200-350ms on CPU)
-7. **Post-processing** — recency boost (90-day half-life, max 30% influence), context expansion (±1 adjacent chunks), dedup overlapping chunks, assemble citations
+1. **Query analysis** — broad/specific/navigational classification via multi-signal scoring (not simple word-count heuristic), extract folder/date filter intent, extract keywords
+2. **Embed query** — BGE-M3 (same model as indexing). For broad queries with HyDE enabled (`hyde_enabled` in config), generate a hypothetical answer via LLM CLI, embed that instead of the raw query.
+3. **Parallel prefetch** — 3 dense lanes + keyword search run in parallel via `ThreadPoolExecutor`:
+   - Dense: Qdrant cosine similarity via `query_points()` with `prefetch` parameter: doc summaries (top 20), section summaries (top 20), chunks (top 30), with metadata filters. Note: `search()` was removed in qdrant-client v1.17; all search operations use the unified `query_points()` API.
+   - Keyword: Qdrant built-in text index on "text" field, chunks top 30, also via `query_points()`
+4. **RRF fusion** — score = Σ 1/(60 + rank_i), accepts 4 separate ranked lists (doc_summaries, section_summaries, chunks, keywords) instead of concatenating dense hits into one list. Apply layer weighting by query classification.
+5. **Recency boost** — 90-day half-life, max 15% influence. Runs BEFORE the cross-encoder reranker.
+6. **Reranker enrichment + cross-encoder rerank** — summary hits get title+topics prepended before scoring. bge-reranker-v2-m3 ONNX, top 30 → top 10 (~200-350ms on CPU).
+7. **Post-processing** — citation expansion (summary hits in final results expand to grounded source chunks), context expansion (±1 adjacent chunks), dedup overlapping chunks, assemble citations
 
 **Multi-prefetch caution:** A reported bug (qdrant/qdrant-client#1072) affects multiple prefetches with different filter conditions. Integration tests must verify all three record types appear in results. As a fallback, issue three separate `query_points()` calls and perform RRF fusion in Python.
 
 ### 7.2 Layer Weighting
 
-Same as cloud: broad queries boost summaries, specific queries boost chunks.
+Same as cloud: broad queries boost summaries, specific queries boost chunks. Navigational queries (e.g., "where is the auth config?") boost section summaries and chunk headings.
 
 ### 7.3 Debug Mode
 
@@ -768,19 +787,19 @@ Same as cloud: returns query classification, layer weights, scores at each stage
 
 ### 8.2 Tools
 
-Five tools (four from cloud spec plus quick_search):
+Five tools (four from cloud spec plus quick_search). All tools that return summaries support a `detail` parameter for progressive disclosure of pyramid summary levels:
 
-**`search_documents(query, folder_filter?, date_filter?, top_k?, format?, debug?)`**
-Full multi-stage hybrid retrieval. Returns ranked evidence with citations. `format` parameter: "text" (default, LLM-friendly grouped output) or "json" (raw structured data).
+**`search_documents(query, folder_filter?, date_filter?, top_k?, format?, detail?, debug?)`**
+Full multi-stage hybrid retrieval. Returns ranked evidence with citations. `format` parameter: "text" (default, LLM-friendly grouped output) or "json" (raw structured data). `detail` parameter controls summary verbosity for progressive disclosure (default "128w").
 
-**`quick_search(query, folder_filter?, limit?)`**
-Lightweight document-level scan returning document summaries. Faster than search_documents for broad queries.
+**`quick_search(query, folder_filter?, limit?, detail?)`**
+Lightweight document-level scan returning document summaries. Faster than search_documents for broad queries. `detail` parameter controls summary verbosity (default "32w").
 
-**`get_document_context(doc_id?, chunk_id?, window?)`**
-Drill-down: doc_id returns full summary + all section summaries. chunk_id returns chunk ± window adjacent chunks.
+**`get_document_context(doc_id?, chunk_id?, window?, detail?)`**
+Drill-down: doc_id returns full summary + all section summaries. chunk_id returns chunk ± window adjacent chunks. `detail` parameter controls summary verbosity (default "128w").
 
-**`list_recent_documents(folder_filter?, limit?)`**
-Recently modified/indexed documents with metadata.
+**`list_recent_documents(folder_filter?, limit?, detail?)`**
+Recently modified/indexed documents with metadata. `detail` parameter controls summary verbosity (default "8w").
 
 **`get_sync_status()`**
 Total files tracked, indexed count, pending count, error count, last sync time.
@@ -847,14 +866,15 @@ local-rag-local/
 │       ├── retrieval/
 │       │   ├── __init__.py
 │       │   ├── engine.py           # Multi-stage: dense + keyword + RRF + rerank
-│       │   ├── query_analyzer.py   # Broad vs specific, filter extraction
+│       │   ├── query_analyzer.py   # Broad/specific/navigational, filter extraction
+│       │   ├── hyde.py             # HyDE: hypothetical document embeddings for broad queries
 │       │   ├── reranker.py         # ONNX bge-reranker-v2-m3
 │       │   └── citations.py        # Citation assembly + formatting
 │       │
 │       ├── mcp/
 │       │   ├── __init__.py
 │       │   ├── server.py           # MCP server setup (stdio + HTTP)
-│       │   └── tools.py            # Tool definitions (4 tools)
+│       │   └── tools.py            # Tool definitions (5 tools)
 │       │
 │       └── db/
 │           ├── __init__.py
@@ -863,7 +883,8 @@ local-rag-local/
 │           └── migrations.py       # Schema creation + migration runner
 │
 ├── migrations/
-│   └── 001_initial.sql             # Full schema (single file for local)
+│   ├── 001_initial.sql             # Full schema (single file for local)
+│   └── 002_pyramid_summaries.sql   # Migrate summary_l1/l2/l3 → geometric pyramid levels
 │
 ├── scripts/
 │   ├── download-models.sh          # Download embedding model + reranker ONNX
@@ -1161,11 +1182,11 @@ Recent errors:
 2.3 Startup re-scan in background thread (mtime pre-filter, non-blocking MCP startup)
 
 **2B: Summarization**
-2.4 LLM CLI summarizer: document pyramid summaries (l1/l2/l3), robust JSON extraction, stdin size limit, stderr capture
+2.4 LLM CLI summarizer: document geometric pyramid summaries (8w/16w/32w/64w/128w), robust JSON extraction, stdin size limit, stderr capture
 2.5 Section summaries via LLM CLI
 2.6 Summary vectors indexed in Qdrant
 2.7 Multi-stage retrieval (doc summaries → sections → chunks via `query_points()` prefetch)
-2.8 Query analysis (broad vs specific layer weighting) — prerequisite for effective pyramid retrieval
+2.8 Query analysis (broad/specific/navigational classification, multi-signal scoring) — prerequisite for effective pyramid retrieval
 2.9 Summary caching by content hash
 
 **2C: Additional MCP tools**
@@ -1178,7 +1199,7 @@ Recent errors:
 ### Phase 3 — Polish + Robustness (Week 6)
 
 3.1 Normalized content hash dedup (SHA-256 on normalized text, in addition to raw-byte dedup from Phase 1a)
-3.2 Recency boost (90-day half-life, max 30% influence)
+3.2 Recency boost (90-day half-life, max 15% influence, applied before reranker)
 3.3 Context expansion (adjacent chunks)
 3.4 Citation formatting polish
 3.5 Debug mode (query classification, layer weights, scores, timing)

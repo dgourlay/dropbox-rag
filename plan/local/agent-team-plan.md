@@ -463,7 +463,7 @@ Agents within the same window can run concurrently. Each window must complete be
 - Query flow: embed query → dense search via VectorStore → keyword search via VectorStore → RRF fusion → rerank → citation assembly
 - RRF fusion: `score = Σ 1/(60 + rank_i)`, merges dense + keyword results, deduplicates by point_id
 - `async_search()` dispatches embedding and reranking via `asyncio.to_thread()`, uses AsyncQdrantClient for Qdrant queries
-- `QueryAnalyzer` — classifies broad vs specific, extracts folder/date filter intent
+- `QueryAnalyzer` — classifies broad/specific/navigational via multi-signal scoring, extracts folder/date filter intent
 - Folder filtering passed through to VectorStore queries
 - Debug mode returns: query classification, layer weights, per-stage scores, timing
 - Tests: mock VectorStore + Embedder + Reranker, verify RRF score calculation, verify filter passthrough, verify async wrapper
@@ -517,7 +517,7 @@ Agents within the same window can run concurrently. Each window must complete be
 
 ### A18: MCP Server
 
-**Responsibility:** MCP server setup (stdio + Streamable HTTP), tool definitions for all 4 tools, async handlers wrapping the retrieval engine.
+**Responsibility:** MCP server setup (stdio + Streamable HTTP), tool definitions for all 5 tools, async handlers wrapping the retrieval engine.
 
 **Files owned:**
 - `src/rag/mcp/__init__.py`
@@ -525,7 +525,7 @@ Agents within the same window can run concurrently. Each window must complete be
 - `src/rag/mcp/tools.py`
 - `tests/test_mcp.py`
 
-**Spec sections:** §8.1 (transport), §8.2 (4 tools), §2.1 Rule 10 (async strategy)
+**Spec sections:** §8.1 (transport), §8.2 (5 tools), §2.1 Rule 10 (async strategy)
 
 **Dependencies:** A15 (RetrievalEngine), A4 (MetadataDB for status/listing tools), A3 (MCPConfig)
 
@@ -533,10 +533,11 @@ Agents within the same window can run concurrently. Each window must complete be
 - MCP server using `mcp` SDK (`>=1.25,<2`)
 - stdio transport (primary) — no stdout writes except JSON-RPC (logging to stderr only)
 - Streamable HTTP transport (alternative) on configured host:port
-- 4 tools implemented:
-  - `search_documents(query, folder_filter?, date_filter?, top_k?, debug?)` — calls `RetrievalEngine.async_search()`
-  - `get_document_context(doc_id?, chunk_id?, window?)` — queries MetadataDB + VectorStore
-  - `list_recent_documents(folder_filter?, limit?)` — queries MetadataDB
+- 5 tools implemented:
+  - `search_documents(query, folder_filter?, date_filter?, top_k?, format?, detail?, debug?)` — calls `RetrievalEngine.async_search()`
+  - `quick_search(query, folder_filter?, limit?, detail?)` — lightweight document-level scan (default detail "32w")
+  - `get_document_context(doc_id?, chunk_id?, window?, detail?)` — queries MetadataDB + VectorStore (default detail "128w")
+  - `list_recent_documents(folder_filter?, limit?, detail?)` — queries MetadataDB (default detail "8w")
   - `get_sync_status()` — queries MetadataDB for counts
 - All handlers are `async def`
 - CPU-bound ops (embedding, reranking) dispatched via `asyncio.to_thread()`
@@ -867,14 +868,14 @@ Uses `claude` CLI as the local LLM (available on dev machines).
 ```
 test_document_summary_generated:
   - Index quarterly-report.pdf with summarization enabled (command="claude")
-  - Assert: documents table has non-null summary_l1, summary_l2, summary_l3
-  - Assert: summary_l1 is a short phrase (< 10 words)
-  - Assert: summary_l3 is a paragraph (> 50 words)
+  - Assert: documents table has non-null summary_8w, summary_16w, summary_32w, summary_64w, summary_128w
+  - Assert: summary_8w is a short phrase (< 10 words)
+  - Assert: summary_128w is a paragraph (> 50 words)
   - Assert: key_topics is a non-empty list of strings
 
 test_section_summaries_generated:
   - Index quarterly-report.pdf with summarization enabled
-  - Assert: sections table has non-null section_summary for each major section
+  - Assert: sections table has non-null section_summary_8w, section_summary_32w, section_summary_128w for each major section
   - Assert: summary text is relevant to section content
 
 test_summary_vectors_in_qdrant:
