@@ -514,6 +514,62 @@ window.__App = function App() {
         {/* Overview tab */}
         {tab === "overview" && (
           <div>
+            {/* Your documents, searchable by AI */}
+            <div
+              style={{
+                background: `linear-gradient(135deg, ${C.accentDim}, ${C.surface})`,
+                border: `1px solid ${C.borderActive}`,
+                borderRadius: 12,
+                padding: "28px 28px 24px",
+                marginBottom: 16,
+              }}
+            >
+              <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 6 }}>
+                Your documents, searchable by AI.
+              </div>
+              <div style={{ color: C.muted, fontSize: 13, lineHeight: 1.6, maxWidth: 720 }}>
+                local-rag indexes your local documents (PDF, DOCX, TXT, MD), builds a
+                hybrid search index with dense vectors and keyword search, and exposes
+                retrieval as MCP tools — so Claude Code, Kiro, and Codex can
+                search your files as naturally as browsing the web.
+              </div>
+              <div style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
+                <a
+                  href="https://github.com/dgourlay/local-rag"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    background: C.accent,
+                    color: "#fff",
+                    padding: "8px 18px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    textDecoration: "none",
+                    fontFamily: mono,
+                  }}
+                >
+                  GitHub Repository
+                </a>
+                <span
+                  onClick={() => setTab("cli")}
+                  style={{
+                    background: C.surface,
+                    color: C.accent,
+                    border: `1px solid ${C.borderActive}`,
+                    padding: "8px 18px",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontFamily: mono,
+                  }}
+                >
+                  CLI Reference →
+                </span>
+              </div>
+            </div>
+
             {/* Quick start */}
             <div
               style={{
@@ -584,70 +640,15 @@ rag search "your query" # test it from the terminal`}
               <p style={{ color: C.text, fontSize: 14, lineHeight: 1.65, margin: 0 }}>
                 Not every document you work with belongs in a shared knowledge base.
                 Not to mention they're scattered across folders you'll never organize,
-                and without search you're left feeding files to AI tools one at a time.
-                Local RAG indexes your local folders and gives{" "}
-                <span style={{ color: C.accent, fontWeight: 500 }}>Claude Code</span>,{" "}
-                <span style={{ color: C.accent, fontWeight: 500 }}>Kiro</span>, and{" "}
-                <span style={{ color: C.accent, fontWeight: 500 }}>Codex</span>{" "}
-                semantic search over everything, automatically.
-                Fully local. Summarization uses your approved LLM CLI, everything else stays on your machine.
+                and without search you're left feeding files to AI tools one at a time.{" "}
+                <span style={{ color: C.accent, fontWeight: 500 }}>Local RAG</span>{" "}
+                indexes your <span style={{ color: C.accent, fontWeight: 500 }}>local folders</span> and
+                gives your AI tools{" "}
+                <span style={{ color: C.accent, fontWeight: 500 }}>semantic search</span>{" "}
+                over everything, automatically.
+                Fully local. Summarization uses your approved LLM CLI, everything else{" "}
+                <span style={{ color: C.accent, fontWeight: 500 }}>stays on your machine</span>.
               </p>
-            </div>
-
-            {/* Your documents, searchable by AI */}
-            <div
-              style={{
-                background: `linear-gradient(135deg, ${C.accentDim}, ${C.surface})`,
-                border: `1px solid ${C.borderActive}`,
-                borderRadius: 12,
-                padding: "28px 28px 24px",
-                marginBottom: 16,
-              }}
-            >
-              <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 6 }}>
-                Your documents, searchable by AI.
-              </div>
-              <div style={{ color: C.muted, fontSize: 13, lineHeight: 1.6, maxWidth: 720 }}>
-                local-rag indexes your local documents (PDF, DOCX, TXT, MD), builds a
-                hybrid search index with dense vectors and keyword search, and exposes
-                retrieval as MCP tools — so Claude Code, Kiro, and Codex can
-                search your files as naturally as browsing the web.
-              </div>
-              <div style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
-                <a
-                  href="https://github.com/dgourlay/local-rag"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    background: C.accent,
-                    color: "#fff",
-                    padding: "8px 18px",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    textDecoration: "none",
-                    fontFamily: mono,
-                  }}
-                >
-                  GitHub Repository
-                </a>
-                <span
-                  onClick={() => setTab("cli")}
-                  style={{
-                    background: C.surface,
-                    color: C.accent,
-                    border: `1px solid ${C.borderActive}`,
-                    padding: "8px 18px",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    fontFamily: mono,
-                  }}
-                >
-                  CLI Reference →
-                </span>
-              </div>
             </div>
 
             {/* Why this exists */}
