@@ -282,12 +282,16 @@ def _handle_reindex(target: str, config: AppConfig, folder: str | None) -> None:
     run_migrations(conn)
 
     if target == "all":
+        # Check multiple tables — a cancelled reindex may leave partial state
         doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-        if doc_count == 0:
+        sync_count = conn.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0]
+        hash_count = conn.execute("SELECT COUNT(*) FROM document_hashes").fetchone()[0]
+        total_tracked = max(doc_count, sync_count, hash_count)
+        if total_tracked == 0:
             click.echo("Nothing to re-index — no documents in the index.")
             return
         click.echo(
-            f"This will purge and re-process all {doc_count} documents."
+            f"This will purge and re-process all indexed data ({doc_count} documents, {sync_count} tracked files)."
         )
         if not click.confirm("Are you sure?"):
             click.echo("Aborted.")
@@ -298,6 +302,13 @@ def _handle_reindex(target: str, config: AppConfig, folder: str | None) -> None:
         conn.execute("DELETE FROM documents")
         conn.execute("DELETE FROM sync_state")
         conn.commit()
+
+        # Also clear Qdrant vectors so stale points don't linger
+        from rag.db.qdrant import QdrantVectorStore
+
+        vector_store = QdrantVectorStore(config.qdrant)
+        vector_store.recreate_collection()
+
         click.echo("Cleared index — re-processing all files.")
 
         if folder is not None:

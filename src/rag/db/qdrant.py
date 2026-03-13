@@ -101,6 +101,12 @@ class QdrantVectorStore:
         instance._collection = collection
         return instance
 
+    def recreate_collection(self) -> None:
+        """Drop and recreate the collection, removing all vectors."""
+        if self._client.collection_exists(self._collection):
+            self._client.delete_collection(self._collection)
+        self.ensure_collection()
+
     def ensure_collection(self) -> None:
         """Create collection with 1024-dim cosine vectors and payload indices."""
         if self._client.collection_exists(self._collection):
