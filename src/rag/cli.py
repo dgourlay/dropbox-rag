@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -368,16 +367,13 @@ def _handle_reindex(target: str, config: AppConfig, folder: str | None) -> None:
 
 
 class _ProgressDisplay:
-    """Rolling two-column progress display for indexing.
+    """Line-by-line progress display for indexing.
 
-    Left column shows "parsing...", right column fills in with the result.
-    Maintains a rolling window of the most recent rows, redrawing in place
-    using ANSI cursor movement.
+    Prints one line per event (parsing started, file done) with aligned columns.
+    No ANSI cursor tricks — safe when external libraries print to stdout/stderr.
     """
 
-    _WINDOW = 10
     _NAME_W = 55
-    _STATUS_W = 30
 
     _OUTCOME_LABELS: dict[str, tuple[str, str]] = {
         "INDEXED": ("indexed", "green"),
@@ -388,16 +384,8 @@ class _ProgressDisplay:
     }
 
     def __init__(self, total: int) -> None:
-        from rag.types import ProcessingOutcome as _PO
-
         self._total = total
         self._idx_w = len(str(total))
-        self._lock = threading.Lock()
-        # file_index -> (name, result_str | None)
-        self._rows: dict[int, tuple[str, str | None]] = {}
-        self._drawn_lines = 0
-        self._completed = 0
-        self._po = _PO
 
     def _fit_name(self, name: str) -> str:
         """Truncate or pad name to exactly _NAME_W characters."""
@@ -405,51 +393,9 @@ class _ProgressDisplay:
             return name[: self._NAME_W - 1] + "…"
         return name.ljust(self._NAME_W)
 
-    def _render_row(self, file_idx: int, name: str, result: str | None) -> str:
-        idx = f"[{file_idx:>{self._idx_w}}/{self._total}]"
-        if result is not None:
-            return f"  {idx} {self._fit_name(name)}  → {result}"
-        return f"  {idx} {self._fit_name(name)}  parsing..."
-
-    def _redraw(self) -> None:
-        """Redraw the rolling window in place."""
-        # Sort rows by file_index, take the visible window
-        sorted_idxs = sorted(self._rows.keys())
-
-        # Window: show rows around the action — from the earliest
-        # still-parsing row, or the last WINDOW rows if all are done
-        first_pending = None
-        for idx in sorted_idxs:
-            if self._rows[idx][1] is None:
-                first_pending = idx
-                break
-        if first_pending is not None:
-            # Show from 2 rows before first pending
-            start_pos = max(0, sorted_idxs.index(first_pending) - 2)
-        else:
-            start_pos = max(0, len(sorted_idxs) - self._WINDOW)
-
-        visible = sorted_idxs[start_pos : start_pos + self._WINDOW]
-
-        lines: list[str] = []
-        for idx in visible:
-            name, result = self._rows[idx]
-            lines.append(self._render_row(idx, name, result))
-
-        # Move cursor up to overwrite previous draw
-        if self._drawn_lines > 0:
-            sys.stdout.write(f"\033[{self._drawn_lines}A\033[J")
-
-        output = "\n".join(lines)
-        if lines:
-            sys.stdout.write(output + "\n")
-        sys.stdout.flush()
-        self._drawn_lines = len(lines)
-
     def on_start(self, file_idx: int, _total: int, name: str) -> None:
-        with self._lock:
-            self._rows[file_idx] = (name, None)
-            self._redraw()
+        idx = f"[{file_idx:>{self._idx_w}}/{self._total}]"
+        click.echo(f"  {idx} {self._fit_name(name)}  parsing...")
 
     def on_done(
         self,
@@ -462,15 +408,11 @@ class _ProgressDisplay:
         label_name = outcome.name if hasattr(outcome, "name") else str(outcome)
         label_info = self._OUTCOME_LABELS.get(label_name, (label_name.lower(), "white"))
         styled = click.style(label_info[0], fg=label_info[1])
-        result_str = f"{styled} ({detail})"
-
-        with self._lock:
-            self._rows[file_idx] = (name, result_str)
-            self._completed += 1
-            self._redraw()
+        idx = f"[{file_idx:>{self._idx_w}}/{self._total}]"
+        click.echo(f"  {idx} {self._fit_name(name)}  {styled} ({detail})")
 
     def finalize(self) -> None:
-        """Ensure cursor is past the display area."""
+        """No-op — kept for interface compatibility."""
         pass
 
 
