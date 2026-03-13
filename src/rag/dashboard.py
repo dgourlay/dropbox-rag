@@ -19,9 +19,34 @@ from rich.text import Text
 if TYPE_CHECKING:
     import sqlite3
 
-    from rag.config import AppConfig
+    from rag.config import AppConfig, FoldersConfig
 
 _MAX_WIDTH = 110
+
+
+def _count_files_on_disk(folders_config: FoldersConfig) -> dict[str, int]:
+    """Count matching files per resolved folder path (no hashing, fast)."""
+    from rag.sync.scanner import classify_file_type, should_ignore
+
+    valid_extensions = {ft.value for ft in folders_config.extensions}
+    counts: dict[str, int] = {}
+
+    for folder in folders_config.paths:
+        folder_path = Path(folder).expanduser().resolve()
+        if not folder_path.is_dir():
+            continue
+        for root, _dirs, files in os.walk(folder_path):
+            root_path = Path(root)
+            for fname in files:
+                file_path = root_path / fname
+                if should_ignore(file_path, folders_config.ignore):
+                    continue
+                ft = classify_file_type(file_path)
+                if ft is None or ft.value not in valid_extensions:
+                    continue
+                resolved_folder = str(root_path)
+                counts[resolved_folder] = counts.get(resolved_folder, 0) + 1
+    return counts
 
 
 def _sizeof_fmt(num: float) -> str:
@@ -203,29 +228,60 @@ def render_dashboard(conn: sqlite3.Connection, config: AppConfig) -> None:
         "WHERE NOT is_deleted GROUP BY process_status"
     ).fetchall()
     sync_counts: dict[str, int] = dict(sync_rows)
-    total_files = sum(sync_counts.values())
     done_files = sync_counts.get("done", 0)
     pending_files = sync_counts.get("pending", 0)
     error_files = sync_counts.get("error", 0) + sync_counts.get("poison", 0)
     processing_files = sync_counts.get("processing", 0)
 
+    # Count actual files on disk per folder for accurate progress
+    disk_counts = _count_files_on_disk(config.folders)
+    total_files = sum(disk_counts.values())
+    # Aggregate disk counts per configured (top-level) folder path
+    resolved_configured: list[str] = [
+        str(Path(p).expanduser().resolve()) for p in config.folders.paths
+    ]
+    disk_per_configured: dict[str, int] = {}
+    for subdir, count in disk_counts.items():
+        for cfg_folder in resolved_configured:
+            if subdir == cfg_folder or subdir.startswith(cfg_folder + os.sep):
+                disk_per_configured[cfg_folder] = (
+                    disk_per_configured.get(cfg_folder, 0) + count
+                )
+                break
+
     type_rows: list[Any] = conn.execute(
         "SELECT file_type, COUNT(*) FROM documents GROUP BY file_type ORDER BY COUNT(*) DESC"
     ).fetchall()
 
-    folder_rows: list[Any] = conn.execute(
+    # Indexed/error counts per configured folder (aggregate subdirs)
+    folder_sync_rows: list[Any] = conn.execute(
         """SELECT
             folder_path,
-            COUNT(*) AS file_count,
             SUM(CASE WHEN process_status = 'done' THEN 1 ELSE 0 END),
             SUM(CASE WHEN process_status IN ('error', 'poison')
-                THEN 1 ELSE 0 END),
-            SUM(CASE WHEN process_status = 'pending' THEN 1 ELSE 0 END)
+                THEN 1 ELSE 0 END)
         FROM sync_state
         WHERE NOT is_deleted
-        GROUP BY folder_path
-        ORDER BY file_count DESC"""
+        GROUP BY folder_path"""
     ).fetchall()
+
+    # Aggregate sync counts into configured folder buckets
+    sync_per_configured: dict[str, tuple[int, int]] = {}
+    for row in folder_sync_rows:
+        subdir, indexed, errors = row[0], row[1], row[2]
+        for cfg_folder in resolved_configured:
+            if subdir == cfg_folder or subdir.startswith(cfg_folder + os.sep):
+                prev_idx, prev_err = sync_per_configured.get(cfg_folder, (0, 0))
+                sync_per_configured[cfg_folder] = (prev_idx + indexed, prev_err + errors)
+                break
+
+    # Build folder_rows: (configured_path, disk_count, indexed, errors)
+    folder_rows: list[tuple[str, int, int, int]] = []
+    for cfg_folder in resolved_configured:
+        disk = disk_per_configured.get(cfg_folder, 0)
+        indexed, errors = sync_per_configured.get(cfg_folder, (0, 0))
+        folder_rows.append((cfg_folder, disk, indexed, errors))
+    folder_rows.sort(key=lambda r: r[1], reverse=True)
 
     recent_docs: list[Any] = conn.execute(
         """SELECT d.title, d.file_type, d.modified_at, d.file_path,
@@ -264,7 +320,7 @@ def render_dashboard(conn: sqlite3.Connection, config: AppConfig) -> None:
     # --- Render ---
 
     console.print()
-    console.rule("[bold bright_blue]RAG Status Dashboard[/]", style="bright_blue")
+    console.rule("[bold bright_blue]Derek's local-RAG Status Dashboard[/]", style="bright_blue")
     console.print()
 
     # Top-line stat panels
@@ -364,8 +420,7 @@ def render_dashboard(conn: sqlite3.Connection, config: AppConfig) -> None:
         folder_table.add_column("Errors", justify="right")
         folder_table.add_column("Progress", justify="left", min_width=22)
 
-        for row in folder_rows:
-            path, count, indexed, errors, _pending = row
+        for path, count, indexed, errors in folder_rows:
             display_path = _shorten_path(path)
             progress = _progress_bar(indexed, count, width=12)
             error_str = f"[red]{errors}[/]" if errors else "[dim]0[/]"
