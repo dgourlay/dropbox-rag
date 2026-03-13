@@ -169,6 +169,30 @@ class TestProcessFile:
         mocks["embedder"].embed_batch.assert_not_called()
         mocks["vector_store"].upsert_points.assert_not_called()
 
+    def test_unchanged_file_skips_pipeline(self, tmp_path: Path) -> None:
+        conn = _create_db()
+        event = _make_event(tmp_path)
+        runner, mocks = _make_runner(tmp_path, conn)
+
+        # Process first time
+        outcome1, _detail = runner.process_file(event)
+        assert outcome1 == ProcessingOutcome.INDEXED
+
+        # Reset mocks for second call
+        mocks["parser"].parse.reset_mock()
+        mocks["embedder"].embed_batch.reset_mock()
+        mocks["vector_store"].upsert_points.reset_mock()
+
+        # Process same event again (same content_hash)
+        outcome2, detail = runner.process_file(event)
+        assert outcome2 == ProcessingOutcome.UNCHANGED
+        assert "unchanged" in detail
+
+        # Nothing should have been called — skipped before parsing
+        mocks["parser"].parse.assert_not_called()
+        mocks["embedder"].embed_batch.assert_not_called()
+        mocks["vector_store"].upsert_points.assert_not_called()
+
     def test_dedup_skips_remaining_pipeline(self, tmp_path: Path) -> None:
         conn = _create_db()
         event = _make_event(tmp_path)

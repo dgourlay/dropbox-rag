@@ -76,11 +76,20 @@ class PipelineRunner:
                 self._handle_deletion(event)
                 return ProcessingOutcome.DELETED, "removed from index"
 
+            # Fast skip: if file content hasn't changed since last successful index, skip entirely
+            existing_sync = self._db.get_sync_state(file_path)
+            if (
+                existing_sync is not None
+                and existing_sync.content_hash == event.content_hash
+                and existing_sync.process_status == "done"
+                and not existing_sync.is_deleted
+            ):
+                return ProcessingOutcome.UNCHANGED, "content unchanged"
+
             path = Path(file_path)
             folder_path = str(path.parent)
             folder_ancestors = self._compute_ancestors(folder_path)
 
-            existing_sync = self._db.get_sync_state(file_path)
             sync_id = existing_sync.id if existing_sync else str(uuid.uuid4())
             retry_count = existing_sync.retry_count if existing_sync else 0
             self._db.upsert_sync_state(
