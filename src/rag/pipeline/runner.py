@@ -510,12 +510,6 @@ class PipelineRunner:
                         ))
                         continue
 
-                    if on_start:
-                        on_start(
-                            file_idx, total,
-                            Path(event.file_path).name,
-                        )
-
                     item = self._parse_stage(event, file_index=file_idx)
                     q.put(item)
                 except Exception:
@@ -603,6 +597,10 @@ class PipelineRunner:
             if item is None:
                 _flush_pending()
                 break
+
+            # Report start on the consumer thread so output stays sequential
+            if on_start:
+                on_start(item.file_index, total, Path(item.event.file_path).name)
 
             # Parse error or deletion -- handle on main thread
             if isinstance(item, _ParseErrorResult):

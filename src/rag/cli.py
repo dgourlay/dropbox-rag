@@ -409,7 +409,7 @@ class _ProgressDisplay:
     def on_start(self, file_idx: int, _total: int, name: str) -> None:
         self._start_times[file_idx] = time.monotonic()
         idx = f"[{file_idx:>{self._idx_w}}/{self._total}]"
-        click.echo(f"  {idx} {self._fit_name(name)}  parsing...")
+        click.echo(f"  {idx} {self._fit_name(name)}  processing...")
 
     def on_status(self, file_idx: int, _total: int, name: str, status: str) -> None:
         idx = f"[{file_idx:>{self._idx_w}}/{self._total}]"
