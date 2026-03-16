@@ -537,8 +537,8 @@ class PipelineRunner:
 
                     item = self._parse_stage(event, file_index=file_idx)
                     q.put(item)
-                except Exception:
-                    logger.exception("Parser thread error for %s", event.file_path)
+                except Exception as exc:
+                    logger.warning("Parse error for %s: %s", event.file_path, exc)
                     q.put(_ParseErrorResult(
                         event=event, file_index=file_idx,
                         error_msg="processing failed",

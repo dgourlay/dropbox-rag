@@ -29,10 +29,17 @@ def _worker_loop(
     A None request signals the worker to exit.
     Lazily caches two converters: one with OCR enabled, one without.
     """
+    import os
+    import sys
     import warnings
 
     warnings.filterwarnings("ignore", message=".*DrawingML.*")
-    logging.getLogger("docling.backend.msword_backend").setLevel(logging.ERROR)
+    # Suppress Docling's verbose "An unexpected error occurred" tracebacks on corrupt files
+    logging.getLogger("docling").setLevel(logging.CRITICAL)
+    logging.getLogger("docling.backend.msword_backend").setLevel(logging.CRITICAL)
+    logging.getLogger("docling.backend.docling_parse_backend").setLevel(logging.CRITICAL)
+    # Redirect subprocess stderr to devnull to suppress Docling's direct prints
+    sys.stderr = open(os.devnull, "w")  # noqa: SIM115
 
     try:
         from docling.datamodel.base_models import InputFormat
@@ -213,6 +220,9 @@ class DoclingParser:
         path = Path(file_path)
         if not path.is_file():
             return ParseError(error=f"File not found: {file_path}", file_path=file_path)
+
+        if path.stat().st_size == 0:
+            return ParseError(error=f"File is empty (0 bytes): {path.name}", file_path=file_path)
 
         # Use pre-computed hash when available, otherwise compute it
         if content_hash is not None:
