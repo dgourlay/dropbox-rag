@@ -23,7 +23,7 @@ This spec covers: algorithm, sentence segmentation, code block handling, configu
 | Overlap strategy | **No index-time overlap for semantic chunks** | Semantic boundaries are meaningful topic shifts. Overlapping across a topic boundary adds noise. Query-time context expansion (citation expansion, `get_document_context` with `window`) already provides overlap when needed. |
 | Min/max guardrails | **Min 64 tokens, max 768 tokens** | Min prevents degenerate single-sentence chunks. Max prevents runaway chunks in monotopically dense text. Both enforced by merge/split after boundary detection. |
 | Section boundaries | **Hard stops** (same as fixed) | Each `ParsedSection` starts a new chunk boundary. Semantic chunking operates within a section. This preserves structural hierarchy from Docling parsing. |
-| Chunker version | **Bump `chunker_version`** when strategy changes | Already tracked in `documents.chunker_version`. Changing strategy for a document triggers re-index on next scan. |
+| Chunker version | **`"semantic-v1"`** when semantic strategy active | Already tracked in `documents.chunker_version`. Changing strategy for a document triggers re-index on next scan. Fixed chunker version unchanged. |
 
 ---
 
@@ -179,9 +179,7 @@ def segment_sentences(text: str) -> list[str]:
 
 The existing `r"(?<=[.!?])\s+"` regex splits on any period followed by whitespace. This breaks on abbreviations ("Dr. Smith"), decimal numbers ("3.5 million"), URLs, and ellipses. spaCy's sentencizer handles these correctly with minimal overhead (~2ms per section).
 
-### 5.3 Shared Sentence Splitter
-
-Both the `"fixed"` and `"semantic"` strategies should use the same sentence segmenter for consistency. The existing `_split_sentences()` regex in `chunker.py` is replaced by `segment_sentences()` for both strategies. This is a minor behavior change for the fixed chunker that improves sentence boundary quality. Since `chunker_version` is tracked, existing documents will re-chunk on next index.
+The fixed chunker's existing regex splitter is left unchanged. Only the semantic chunker uses spaCy's sentencizer. This avoids an unnecessary behavior change and re-index for users who stay on the fixed strategy.
 
 ---
 
@@ -195,20 +193,14 @@ Add a `[chunking]` section to `config.toml`:
 [chunking]
 # Chunking strategy: "fixed" (default) or "semantic"
 strategy = "fixed"
-# Target chunk size in tokens (both strategies)
-target_tokens = 512
-# Token overlap between adjacent chunks (fixed strategy only)
-overlap_tokens = 64
-# Max chunk size in tokens (semantic strategy guardrail)
-max_chunk_tokens = 768
-# Min chunk size in tokens (semantic strategy guardrail, merge if below)
-min_chunk_tokens = 64
-# Similarity threshold for boundary detection (semantic strategy)
+# Similarity threshold for boundary detection (semantic strategy only)
 # Lower = fewer boundaries = larger chunks. Range: 0.0-1.0
 similarity_threshold = 0.35
-# Max sentences per chunk before forced split (semantic strategy)
-max_chunk_sentences = 15
+# Max chunk size in tokens (semantic strategy guardrail)
+max_chunk_tokens = 768
 ```
+
+All other chunking parameters (`target_tokens=512`, `overlap_tokens=64`, `min_chunk_tokens=64`, `max_chunk_sentences=15`) are hardcoded defaults. The fixed chunker's existing parameters are unchanged. Only 3 knobs are exposed because most users should never need to tune them.
 
 ### 6.2 Pydantic Config Model
 
@@ -217,28 +209,8 @@ ChunkingStrategy = Literal["fixed", "semantic"]
 
 class ChunkingConfig(BaseModel):
     strategy: ChunkingStrategy = "fixed"
-    target_tokens: int = Field(default=512, ge=64, le=2048)
-    overlap_tokens: int = Field(default=64, ge=0, le=256)
-    max_chunk_tokens: int = Field(default=768, ge=128, le=2048)
-    min_chunk_tokens: int = Field(default=64, ge=16, le=256)
     similarity_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
-    max_chunk_sentences: int = Field(default=15, ge=5, le=30)
-
-    @model_validator(mode="after")
-    def validate_token_ranges(self) -> ChunkingConfig:
-        if self.min_chunk_tokens >= self.target_tokens:
-            msg = (
-                f"min_chunk_tokens ({self.min_chunk_tokens}) must be "
-                f"< target_tokens ({self.target_tokens})"
-            )
-            raise ValueError(msg)
-        if self.max_chunk_tokens < self.target_tokens:
-            msg = (
-                f"max_chunk_tokens ({self.max_chunk_tokens}) must be "
-                f">= target_tokens ({self.target_tokens})"
-            )
-            raise ValueError(msg)
-        return self
+    max_chunk_tokens: int = Field(default=768, ge=128, le=2048)
 ```
 
 Add to `AppConfig`:
@@ -273,20 +245,9 @@ ChunkingStrategy = Literal["fixed", "semantic"]
 
 No new Pydantic models are needed. The `Chunk` model is unchanged. The chunker's output contract (`list[Chunk]`) is identical for both strategies.
 
-### 7.2 Internal Dataclass
+### 7.2 Internal Data
 
-A frozen dataclass for the boundary detection phase, internal to the semantic chunker:
-
-```python
-@dataclass(frozen=True, slots=True)
-class SentenceWithEmbedding:
-    index: int
-    text: str
-    token_count: int
-    embedding: list[float]
-```
-
-This stays within the chunker module and does not cross pipeline boundaries.
+No new dataclass needed. Sentences with their embeddings are represented as `list[tuple[str, list[float]]]` (text, embedding pairs) within `chunker_semantic.py`. Token counts are computed inline via tiktoken as needed. This keeps the internal representation simple and avoids a dataclass for a single-use, module-internal concern.
 
 ---
 
@@ -296,11 +257,11 @@ This stays within the chunker module and does not cross pipeline boundaries.
 
 ```
 src/rag/pipeline/
-    chunker.py           # Existing — refactored to dispatch by strategy
-    chunker_fixed.py     # Extracted: current fixed-size logic
-    chunker_semantic.py  # New: semantic chunking logic
-    sentence.py          # New: shared sentence segmentation + code block handling
+    chunker.py           # Existing — add dispatch at top, fixed logic stays in place
+    chunker_semantic.py  # New: semantic chunking + sentence segmentation + code block handling
 ```
+
+No new `chunker_fixed.py` or `sentence.py`. The fixed chunker logic stays in `chunker.py` untouched. All semantic-specific code (sentence segmentation, code block extraction, boundary detection, guardrails) lives in `chunker_semantic.py`.
 
 ### 8.2 Dispatch
 
@@ -335,10 +296,10 @@ The pipeline currently calls `chunk_document(doc)`. This changes to `chunk_docum
 
 The `chunker_version` stored in the `documents` table must encode the strategy:
 
-- Fixed: `"fixed-v2"` (v2 because sentence segmentation changes from regex to spaCy)
-- Semantic: `"semantic-v1-t0.35"` (includes threshold since it affects boundaries)
+- Fixed: unchanged (existing version string)
+- Semantic: `"semantic-v1"`
 
-When a document's stored `chunker_version` differs from the current version, the pipeline re-chunks that document on the next index run. This is already supported by the existing version-check logic.
+When a document's stored `chunker_version` differs from the current version, the pipeline re-chunks that document on the next index run. This is already supported by the existing version-check logic. The threshold is not encoded in the version string — if a user changes `similarity_threshold`, they should run `rag index --reindex` explicitly.
 
 ---
 
@@ -346,11 +307,11 @@ When a document's stored `chunker_version` differs from the current version, the
 
 ### 9.1 Minimum Chunk Size (Merge)
 
-After boundary detection, any chunk with fewer than `min_chunk_tokens` (default 64) tokens is merged with the adjacent chunk that has the highest similarity to it (using the already-computed sentence embeddings). If it is the last chunk, merge with the previous chunk.
+After boundary detection, any chunk with fewer than 64 tokens is merged with the previous chunk. If it is the first chunk, merge with the next chunk. No similarity comparison needed — the previous chunk is almost always the right merge target, and the simplicity outweighs any marginal quality gain from similarity-based selection.
 
 ### 9.2 Maximum Chunk Size (Split)
 
-After boundary detection, any chunk exceeding `max_chunk_tokens` (default 768) tokens is split at the sentence boundary closest to the midpoint. This is a simple bisection, not recursive -- if a half still exceeds the max (only possible with very long sentences), it is emitted as-is.
+After boundary detection, any chunk exceeding `max_chunk_tokens` (configurable, default 768) tokens is split at the sentence boundary closest to the midpoint. This is a simple bisection, not recursive -- if a half still exceeds the max (only possible with very long sentences), it is emitted as-is.
 
 ### 9.3 Minimum Sentences for Semantic Mode
 
@@ -371,10 +332,12 @@ The primary added cost of semantic chunking is embedding every sentence in a sec
 | Metric | Estimate |
 |---|---|
 | Avg sentences per document | ~100-200 |
-| BGE-M3 encode speed (CPU, batch 32) | ~50-80 sentences/sec |
-| Time per document (sentence embedding) | ~2-4 seconds |
-| Time for 500-doc corpus | ~15-30 minutes added |
+| BGE-M3 encode speed (CPU, batch 32) | ~15-30 sentences/sec |
+| Time per document (sentence embedding) | ~4-12 seconds |
+| Time for 500-doc corpus | ~30-90 minutes added |
 | Memory overhead | Negligible (embeddings are 1024 floats per sentence, discarded after chunking) |
+
+Note: CPU embedding speed varies significantly by hardware. The estimates above are conservative for typical developer laptops (M-series Mac, modern x86). The sentence embeddings are shorter texts than full chunks, so per-sentence encoding is faster than per-chunk, but there are more of them.
 
 This is meaningful but acceptable for an opt-in feature. The sentence embedding step happens once per document at index time, not at query time.
 
@@ -392,9 +355,49 @@ Use numpy for the dot product: `float(np.dot(a, b))` where `a` and `b` are numpy
 
 ---
 
-## 11. Testing
+## 11. CLI Integration
 
-### 11.1 Unit Tests (`tests/test_chunker_semantic.py`)
+### 11.1 Progress Display
+
+During `rag index`, the semantic chunker adds a progress phase between parsing and embedding. The existing progress display (`cli.py`) should show:
+
+```
+[3/6] Chunking (semantic)... 12/45 sections  [sentence embedding]
+```
+
+When using the fixed strategy, display remains unchanged. The phase label changes from "Chunking" to "Chunking (semantic)" only when semantic strategy is active.
+
+### 11.2 `rag status` Dashboard
+
+The `rag status` dashboard should display the active chunking strategy:
+
+```
+Chunking:     semantic (threshold=0.35)
+```
+
+or:
+
+```
+Chunking:     fixed (512 tokens, 64 overlap)
+```
+
+This helps users confirm which strategy is active without checking `config.toml`.
+
+### 11.3 `rag doctor` Health Check
+
+Add a check for spaCy availability when semantic strategy is configured:
+
+- Verify `spacy.blank("en")` loads successfully
+- Verify `sentencizer` pipe can be added
+- Report: `✓ spaCy sentencizer available` or `✗ spaCy not installed (required for semantic chunking)`
+
+No check needed when strategy is `"fixed"`.
+
+---
+
+## 12. Testing
+
+### 12.1 Unit Tests (`tests/test_chunker_semantic.py`)
 
 | Test | What it verifies |
 |---|---|
@@ -411,59 +414,56 @@ Use numpy for the dot product: `float(np.dot(a, b))` where `a` and `b` are numpy
 | `test_strategy_dispatch` | `chunk_document()` dispatches to correct implementation based on config |
 | `test_fixed_strategy_unchanged` | Fixed strategy produces identical output to current chunker (regression) |
 
-### 11.2 Unit Tests (`tests/test_sentence.py`)
+### 12.2 Unit Tests (code block handling, in same file)
 
 | Test | What it verifies |
 |---|---|
-| `test_abbreviations` | "Dr. Smith went home." is one sentence, not two |
-| `test_decimal_numbers` | "Revenue was 3.5 million." is one sentence |
 | `test_code_block_extract_restore` | Roundtrip preserves code blocks exactly |
 | `test_nested_code_blocks` | Nested triple-backticks handled correctly |
 | `test_placeholder_in_original` | Text containing null bytes does not collide with placeholders |
 
-### 11.3 Integration Test
+### 12.3 Integration Test
 
 Add a fixture document with two clearly distinct topics (e.g., a document about "machine learning" in the first half and "cooking recipes" in the second half). Assert that semantic chunking places a boundary between the topics while fixed chunking may not.
 
-### 11.4 E2E Test Update
+### 12.4 E2E Test Update
 
 Existing e2e tests use the default `"fixed"` strategy and must continue to pass unchanged. Add one e2e test that sets `strategy = "semantic"` in a test config and verifies end-to-end indexing and retrieval works.
 
 ---
 
-## 12. Migration
+## 13. Migration
 
-### 12.1 Existing Indexes
+### 13.1 Existing Indexes
 
 Switching `strategy` from `"fixed"` to `"semantic"` (or vice versa) changes the `chunker_version`. On the next `rag index` run, documents with a mismatched `chunker_version` are re-chunked and re-indexed automatically. No manual migration step is needed.
 
-### 12.2 No Schema Changes
+### 13.2 No Schema Changes
 
 The SQLite schema (`chunks` table) and Qdrant collection schema are unchanged. Semantic chunks produce the same `Chunk` model, the same `VectorPoint` payload, and the same UUID5 point IDs (the UUID inputs are `doc_id`, `section_order`, `chunk_idx` -- identical structure).
 
-### 12.3 Full Re-index
+### 13.3 Full Re-index
 
 Users switching strategies should expect a full re-index of all documents. This is the same cost as `rag index --reindex`. The `rag status` dashboard already shows re-indexing progress.
 
-### 12.4 Mixed Strategies
+### 13.4 Mixed Strategies
 
 A single index can contain documents chunked with different strategies (some fixed, some semantic). This is a valid state during incremental re-indexing. There is no need to enforce uniformity -- retrieval does not depend on chunking strategy.
 
 ---
 
-## 13. Implementation Checklist
+## 14. Implementation Checklist
 
 Ordered by dependency:
 
-1. **`src/rag/pipeline/sentence.py`** -- `segment_sentences()`, `extract_code_blocks()`, `restore_code_blocks()`
-2. **`src/rag/types.py`** -- Add `ChunkingStrategy` literal
-3. **`src/rag/config.py`** -- Add `ChunkingConfig` model, add `chunking` field to `AppConfig`
-4. **`src/rag/pipeline/chunker_fixed.py`** -- Extract current logic from `chunker.py`, swap regex splitter for `segment_sentences()`
-5. **`src/rag/pipeline/chunker_semantic.py`** -- `chunk_document_semantic()`, `detect_boundaries()`, guardrail merge/split
-6. **`src/rag/pipeline/chunker.py`** -- Refactor to dispatcher, accept `ChunkingConfig` + optional `Embedder`
-7. **Pipeline call site** -- Pass `config.chunking` and `embedder` to `chunk_document()`
-8. **Chunker version logic** -- Update version string generation
-9. **Tests** -- All tests from section 11
-10. **Documentation** -- Update `config.toml` example in main spec
+1. **`src/rag/types.py`** — Add `ChunkingStrategy` literal
+2. **`src/rag/config.py`** — Add `ChunkingConfig` model (3 fields), add `chunking` field to `AppConfig`
+3. **`src/rag/pipeline/chunker_semantic.py`** — All semantic code: `segment_sentences()`, `extract_code_blocks()`, `restore_code_blocks()`, `detect_boundaries()`, `chunk_document_semantic()`, guardrail merge/split
+4. **`src/rag/pipeline/chunker.py`** — Add dispatch at top of existing `chunk_document()`, accept `ChunkingConfig` + optional `Embedder`. Fixed chunker logic stays in place unchanged.
+5. **Pipeline call site** — Pass `config.chunking` and `embedder` to `chunk_document()`
+6. **Chunker version logic** — Return `"semantic-v1"` when semantic strategy is active
+7. **CLI integration** — Progress display, `rag status`, `rag doctor` (section 11)
+8. **Tests** — All tests from section 12
+9. **Documentation** — Update `config.toml` example in main spec
 
-Steps 1-3 have no dependencies and can be done in parallel. Steps 4-6 depend on 1-3. Steps 7-10 depend on 4-6.
+Steps 1-2 have no dependencies and can be done in parallel. Step 3 depends on 1-2. Steps 4-6 depend on 3. Steps 7-9 depend on 4-6.
