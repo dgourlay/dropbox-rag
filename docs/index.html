@@ -90,16 +90,17 @@ const components = {
     icon: "⚙",
     color: C.amber,
     dim: C.amberDim,
-    desc: "Classify → Parse → Normalize → Dedup → Chunk → Embed → Summarize → Index",
+    desc: "Classify → Parse → Normalize → Dedup → Chunk → Questions → Embed → Summarize → Index",
     details: {
       purpose:
-        "12-stage pipeline transforms raw files into searchable chunks with embeddings and summaries. Each file processed atomically with error handling and retry logic.",
+        "13-stage pipeline transforms raw files into searchable chunks with embeddings and summaries. Each file processed atomically with error handling and retry logic.",
       how: [
         "Docling parser: PDF + DOCX with OCR routing (subprocess isolation)",
         "Text parser fallback: TXT + MD files",
         "Normalization: whitespace, paragraph reflow, content hashing",
         "Dedup: SHA-256 exact + normalized hash (cross-file duplicate detection)",
-        "Chunking: 512-token, 64-token overlap, heading-boundary aware",
+        "Chunking: fixed (512-token, 64-token overlap) or semantic (Max-Min boundary detection with BGE-M3)",
+        "Question generation: LLM generates 3 questions per chunk, prepended before embedding",
         "Embedding: local BGE-M3, batched, 1024-dim vectors",
         "Summarization: LLM CLI (claude/kiro) for geometric pyramid summaries (doc + section)",
       ],
@@ -107,6 +108,8 @@ const components = {
         "Docling runs in child subprocess for memory isolation",
         "5-level geometric pyramid: 8w phrase, 16w sentence, 32w abstract, 64w summary, 128w detailed paragraph",
         "Section summaries with doc context",
+        "Semantic chunking: [chunking] config section (strategy, similarity_threshold, max_chunk_tokens)",
+        "Auto-questions: [questions] config section (enabled by default)",
         "Deterministic UUID5 point IDs for overwrite semantics",
         "Retry with exponential backoff, poison after 3 failures",
       ],
@@ -154,7 +157,7 @@ const components = {
         "Dense: 1024-dim cosine similarity (BGE-M3)",
         "Keyword: built-in text index for BM25-equivalent search",
         "3 record types: chunk, document_summary, section_summary",
-        "Payload indices: folder, file_type, record_type, modified_at, key_topics",
+        "Payload indices: folder, file_type, record_type, modified_at, key_topics, generated_questions",
         "query_points() API for all searches (not deprecated search())",
         "Deterministic UUID5 point IDs: upsert overwrites, no delete+reinsert",
       ],
@@ -179,7 +182,7 @@ const components = {
       how: [
         "Query analysis: classify as broad, specific, or navigational (multi-signal scoring)",
         "3-lane prefetch (parallel via ThreadPoolExecutor): doc_summary (top 20), section_summary (top 20), chunks (top 30)",
-        "Keyword search: BM25-equivalent + key_topics matching",
+        "Keyword search: BM25-equivalent + key_topics + generated_questions matching",
         "RRF fusion: 4 separate ranked lists (doc_summaries, section_summaries, chunks, keywords)",
         "Layer weighting: broad (×1.5/×1.3), navigational (×1.0/×1.4), specific (×0.7/×0.9)",
         "Recency boost: 90-day half-life, max 15% (applied before reranker)",
@@ -212,9 +215,13 @@ const components = {
         "get_document_context: doc overview or chunk with surrounding context · detail param for summary zoom",
         "list_recent_documents: browse recently indexed files by folder · detail param for progressive disclosure",
         "get_sync_status: indexing health, file counts, error breakdown",
+        "Server instructions (~600 words): recommended workflow, query tips, configured folders",
+        "3 MCP prompts: research (deep topic), discover (browse collection), catch-up (recent changes)",
       ],
       config: [
         "Transport: stdio (default, Claude Desktop) or Streamable HTTP",
+        "Enriched tool descriptions (3-5 sentences, <500 chars) for better LLM tool selection",
+        "Server instructions provide workflow guidance and folder context",
         "Lazy component init: models loaded on first tool call",
         "Async handlers with asyncio.to_thread() for CPU-bound ops",
         "check_same_thread=False for SQLite in async context",
@@ -260,7 +267,8 @@ const pipelineStages = [
   { id: "5", label: "Register Hash", desc: "Store hashes for future dedup", cat: "index" },
   { id: "6", label: "Save Document", desc: "Upsert document metadata to SQLite", cat: "index" },
   { id: "7", label: "Save Sections", desc: "Store section headings + page ranges", cat: "index" },
-  { id: "8", label: "Chunk", desc: "512-token chunks, 64-token overlap, heading-aware", cat: "index" },
+  { id: "8", label: "Chunk", desc: "Fixed (512 tokens) or semantic (Max-Min boundary detection)", cat: "index" },
+  { id: "8.5", label: "Generate Questions", desc: "LLM generates 3 questions per chunk (prepended before embedding)", cat: "index" },
   { id: "9", label: "Save Chunks", desc: "Store chunk text + metadata to SQLite", cat: "index" },
   { id: "10", label: "Embed", desc: "BGE-M3 batch encoding → 1024-dim vectors", cat: "embed" },
   { id: "11", label: "Index Vectors", desc: "Upsert chunk points to Qdrant + cleanup stale", cat: "embed" },
@@ -297,13 +305,13 @@ const mcpTools = [
     name: "get_sync_status",
     desc: "System health and processing stats",
     params: "(none)",
-    detail: "Returns total files, indexed count, pending count, error count, and per-folder breakdown with status counts.",
+    detail: "Returns total files, indexed count, pending count, error count, and per-folder breakdown with status counts. Includes chunking_strategy, questions_enabled, and chunks_with_questions fields.",
   },
 ];
 
 const cliCommands = [
   { cmd: "rag init", desc: "Interactive setup wizard", detail: "Configure folders, LLM CLI, Qdrant connection, file extensions, and generate MCP config for Claude Desktop/Code." },
-  { cmd: "rag index", desc: "Full scan + process all documents", detail: "Walks configured folders, detects new/modified files by mtime + hash, runs the 12-stage pipeline." },
+  { cmd: "rag index", desc: "Full scan + process all documents", detail: "Walks configured folders, detects new/modified files by mtime + hash, runs the 13-stage pipeline." },
   { cmd: "rag index --reindex", desc: "Purge all + re-process", detail: "Clears all index data (with confirmation prompt) then re-processes every file from scratch." },
   { cmd: "rag index --reindex FILE", desc: "Re-process single file", detail: "Clears index state for one file and re-processes it. Errors if the file isn't already indexed." },
   { cmd: "rag serve", desc: "Start MCP server (stdio)", detail: "Launches the MCP server for Claude Desktop or Claude Code. Use --http for Streamable HTTP transport." },
@@ -318,7 +326,7 @@ const retrievalStages = [
   { step: "1", label: "Query Analysis", desc: "Classify broad/specific/navigational, extract hints", color: C.cyan },
   { step: "2", label: "Embed Query", desc: "BGE-M3 encode query → 1024-dim vector (or HyDE hypothetical answer for broad queries)", color: C.green },
   { step: "3", label: "3-Lane Prefetch", desc: "doc_summary (20) + section_summary (20) + chunks (30) — parallel execution", color: C.amber },
-  { step: "4", label: "Keyword Search", desc: "BM25-equivalent + key_topics matching — parallel with prefetch", color: C.amber },
+  { step: "4", label: "Keyword Search", desc: "BM25-equivalent + key_topics + generated_questions matching — parallel with prefetch", color: C.amber },
   { step: "5", label: "RRF Fusion", desc: "RRF over 4 ranked lists: Σ 1/(60 + rank)", color: C.purple },
   { step: "6", label: "Layer Weighting", desc: "Broad: ×1.5/×1.3 · Navigational: ×1.0/×1.4 · Specific: ×0.7/×0.9", color: C.purple },
   { step: "7", label: "Recency Boost", desc: "90-day half-life, max 15% exponential decay", color: C.red },
@@ -709,6 +717,18 @@ rag search "your query" # test it from the terminal`}
                   desc: "Pluggable LLM summarizer generates a 3-level document pyramid (phrase → sentence → paragraph) plus section summaries for better ranking.",
                   color: C.rose,
                 },
+                {
+                  icon: "🧩",
+                  title: "Semantic Chunking",
+                  desc: "Opt-in semantic boundary detection using BGE-M3 sentence embeddings. Max-Min algorithm finds topic shifts within sections. Min 64 / max 768 token guardrails.",
+                  color: C.green,
+                },
+                {
+                  icon: "❓",
+                  title: "Auto Questions",
+                  desc: "LLM generates 3 questions per chunk at index time. Questions enrich dense vectors and are keyword-indexed for better recall. Graceful degradation if LLM unavailable.",
+                  color: C.amber,
+                },
               ].map((item, i) => (
                 <div
                   key={i}
@@ -867,6 +887,7 @@ rag search "your query" # test it from the terminal`}
                   { label: "Embedding Model", val: "BGE-M3 (1024-dim, ~1.5GB)" },
                   { label: "Reranker", val: "bge-reranker-v2-m3 (ONNX, ~1.2GB)" },
                   { label: "Chunk Size", val: "512 tokens, 64-token overlap" },
+                  { label: "Chunking", val: "Fixed or Semantic (opt-in)" },
                   { label: "Supported Formats", val: "PDF, DOCX, TXT, MD" },
                   { label: "MCP Tools", val: "5 tools" },
                   { label: "Monthly Cost", val: "$0" },
@@ -1050,7 +1071,7 @@ rag search "your query" # test it from the terminal`}
                 lineHeight: 1.5,
               }}
             >
-              Each file is processed through a 12-stage pipeline. Stages 1-4 parse and deduplicate,
+              Each file is processed through a 13-stage pipeline. Stages 1-4 parse and deduplicate,
               5-9 store metadata in SQLite, and 10-12 create embeddings and summaries in Qdrant.
               Failures are retried up to 3 times before marking as poison.
             </div>
@@ -1202,7 +1223,7 @@ rag search "your query" # test it from the terminal`}
                   {
                     level: "◼",
                     label: "Chunks",
-                    example: "512-token chunks with 64-token overlap. Each embedded as chunk vector.",
+                    example: "512-token chunks with 64-token overlap. May include auto-generated questions. Each embedded as chunk vector.",
                     width: "100%",
                   },
                 ].map((item, i) => (
@@ -1428,7 +1449,9 @@ rag search "your query" # test it from the terminal`}
                 lineHeight: 1.5,
               }}
             >
-              5 MCP tools exposed via stdio (Claude Desktop, Claude Code) or Streamable HTTP.
+              5 MCP tools with enriched descriptions for better LLM tool selection, server instructions
+              providing workflow guidance (~600 words), and 3 prompt templates (slash commands).
+              Exposed via stdio (Claude Desktop, Claude Code) or Streamable HTTP.
               Components are lazy-initialized on first tool call — model loading happens once, then
               subsequent calls are fast.
             </div>
@@ -1498,6 +1521,98 @@ rag search "your query" # test it from the terminal`}
                   )}
                 </div>
               ))}
+            </div>
+
+            {/* MCP Prompts */}
+            <div
+              style={{
+                marginTop: 16,
+                background: C.surface,
+                border: `1px solid ${C.border}`,
+                borderRadius: 8,
+                padding: 16,
+                marginBottom: 16,
+              }}
+            >
+              <div
+                style={{
+                  color: C.accent,
+                  fontSize: 10,
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: 1,
+                  marginBottom: 12,
+                }}
+              >
+                MCP Prompts / Slash Commands
+              </div>
+              <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.5, marginBottom: 12 }}>
+                Three built-in prompt templates available as slash commands in compatible MCP clients.
+              </div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {[
+                  { name: "/research", desc: "Deep topic research", detail: "Multi-step workflow: scout with quick_search, then deep-dive with search_documents, expand context with get_document_context. Synthesizes findings with citations." },
+                  { name: "/discover", desc: "Browse your collection", detail: "Lists recent documents, explores folders, surfaces key topics and document types. Great for understanding what you have indexed." },
+                  { name: "/catch-up", desc: "Recent changes", detail: "Reviews recently indexed or updated documents, summarizes what's new, and highlights changes since your last session." },
+                ].map((p, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      background: C.bg,
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 6,
+                      padding: "10px 14px",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span
+                        style={{
+                          color: C.accent,
+                          fontWeight: 700,
+                          fontFamily: mono,
+                          fontSize: 13,
+                        }}
+                      >
+                        {p.name}
+                      </span>
+                      <span style={{ color: C.muted, fontSize: 11 }}>{p.desc}</span>
+                    </div>
+                    <div style={{ color: C.text, fontSize: 11, lineHeight: 1.5, marginTop: 6 }}>
+                      {p.detail}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Server Instructions */}
+            <div
+              style={{
+                background: C.surface,
+                border: `1px solid ${C.border}`,
+                borderRadius: 8,
+                padding: 16,
+                marginBottom: 16,
+              }}
+            >
+              <div
+                style={{
+                  color: C.purple,
+                  fontSize: 10,
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: 1,
+                  marginBottom: 8,
+                }}
+              >
+                Server Instructions
+              </div>
+              <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.5 }}>
+                The MCP server includes ~600 words of instructions sent to the LLM on connection.
+                These guide the recommended workflow (scout with quick_search, then search_documents,
+                then drill down with get_document_context), provide query tips for better results,
+                and list the configured folder paths so the LLM knows what content is available.
+              </div>
             </div>
 
             {/* Transport config */}
@@ -1698,6 +1813,14 @@ dimensions = 1024
 [reranker]
 top_k_candidates = 30
 top_k_final = 10
+
+[chunking]
+strategy = "fixed"
+similarity_threshold = 0.35
+max_chunk_tokens = 768
+
+[questions]
+enabled = true
 
 [mcp]
 transport = "stdio"`}

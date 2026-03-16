@@ -33,6 +33,14 @@ paths = ["~/Documents", "~/Work"]
 # args = ["--print", "--max-tokens", "2048"]
 # timeout_seconds = 60
 
+# [chunking]
+# strategy = "fixed"              # "fixed" (default) or "semantic"
+# similarity_threshold = 0.35     # semantic only: boundary detection threshold
+# max_chunk_tokens = 768          # semantic only: max tokens per chunk
+
+# [questions]
+# enabled = true                  # auto-generate 3 questions per chunk at index time
+
 # [mcp]
 # transport = "stdio"
 # host = "127.0.0.1"

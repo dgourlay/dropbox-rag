@@ -10,10 +10,12 @@ process plus a Qdrant Docker container. No cloud infrastructure required.
 
 - **Hybrid search** -- dense vector (BGE-M3) + keyword search with RRF fusion
 - **ONNX cross-encoder reranking** for high-precision results
-- **MCP integration** -- works as a tool for Claude Desktop and Claude Code
+- **MCP integration** -- works as a tool for Claude Desktop and Claude Code, with server instructions, enriched tool descriptions, and built-in prompts (research, discover, catch-up)
 - **Multi-format parsing** -- PDF, DOCX, TXT, MD via Docling with OCR support
 - **Filesystem watching** -- automatic re-indexing when documents change
 - **Document summarization** -- shells out to any LLM CLI tool (claude, etc.)
+- **Semantic chunking** (opt-in) -- sentence-embedding boundary detection using simplified Max-Min algorithm with BGE-M3, as an alternative to fixed-size chunking
+- **Auto-generated questions** -- LLM generates 3 questions per chunk at index time, enriching dense vectors and keyword search for better recall
 - **Fully local** -- all models run on-device, no API keys needed for core search
 
 
@@ -144,9 +146,24 @@ kiro-cli mcp add \
 
 Run `rag mcp-config --print` to get the exact Python path for your venv.
 
+### MCP prompts (slash commands)
+
+The server registers three prompts, available as slash commands in Claude Code:
+
+| Prompt | Description |
+|---|---|
+| `/research` | Deep research on a topic -- scouts documents, extracts evidence, synthesizes findings |
+| `/discover` | Explore what's in the index -- browse recent documents, discover topics |
+| `/catch-up` | Summarize recent changes in a folder or across all indexed documents |
+
+The server also provides ~600 words of instructions guiding the LLM through a
+recommended scout-then-search-then-drill-down workflow, query tips, and a list
+of configured folders.
+
 ### Available MCP tools
 
-Once connected, your LLM has access to these tools:
+Once connected, your LLM has access to these tools (with enriched descriptions
+for better LLM tool selection):
 
 | Tool | Description |
 |---|---|
@@ -235,6 +252,14 @@ command = "claude"
 args = ["--print", "--max-tokens", "2048"]
 timeout_seconds = 60
 
+[chunking]
+strategy = "fixed"              # "fixed" (default) or "semantic"
+similarity_threshold = 0.35     # semantic only: boundary detection threshold
+max_chunk_tokens = 768          # semantic only: max tokens per chunk
+
+[questions]
+enabled = true                  # auto-generate 3 questions per chunk at index time
+
 [mcp]
 transport = "stdio"
 host = "127.0.0.1"
@@ -252,11 +277,12 @@ batch_window_seconds = 10
 
 Single Python process handles: filesystem watching (watchdog) -> Docling
 parsing (in subprocess for memory isolation) -> normalization -> dedup ->
-chunking (512 tokens, 64 overlap) -> embedding (BGE-M3, 1024-dim) ->
-summarization (LLM CLI) -> Qdrant indexing. Retrieval: 3-lane prefetch
-(document summaries, section summaries, chunks) -> RRF fusion with layer
-weighting -> recency boost -> ONNX cross-encoder reranker -> cited evidence
-returned to the calling LLM.
+chunking (fixed 512-token or opt-in semantic via BGE-M3 sentence embeddings) ->
+embedding (BGE-M3, 1024-dim) -> auto-question generation (LLM generates 3
+questions per chunk, prepended before embedding) -> summarization (LLM CLI) ->
+Qdrant indexing. Retrieval: 3-lane prefetch (document summaries, section
+summaries, chunks) -> RRF fusion with layer weighting -> recency boost -> ONNX
+cross-encoder reranker -> cited evidence returned to the calling LLM.
 
 ```
 src/rag/
@@ -267,10 +293,12 @@ src/rag/
   protocols.py         # Protocol classes (Embedder, Summarizer, etc.)
   results.py           # Discriminated union Result types
   sync/                # Filesystem scanner + watcher
-  pipeline/            # classify -> parse -> normalize -> dedup -> chunk -> embed -> summarize -> index
+  pipeline/            # classify -> parse -> normalize -> dedup -> chunk -> embed -> questions -> summarize -> index
     parser/            # Docling (PDF/DOCX) + text fallback (TXT/MD)
+    chunker_semantic.py # Semantic chunking (opt-in, Max-Min algorithm)
   retrieval/           # 3-lane prefetch + RRF + layer weighting + reranker + citations
-  mcp/                 # MCP server (stdio + HTTP) + 5 tool definitions
+  mcp/                 # MCP server (stdio + HTTP) + 5 tools + 3 prompts + server instructions
+    prompts.py         # MCP prompts (research, discover, catch-up)
   db/                  # SQLite + Qdrant clients
 migrations/            # SQL schema
 tests/                 # Unit + e2e tests
