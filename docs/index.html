@@ -2068,14 +2068,14 @@ transport = "stdio"`}
                   >
                     {release.version}
                   </span>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: C.accent }}>
                     {release.title}
                   </span>
                   <span style={{ fontSize: 11, color: C.muted, fontFamily: mono }}>
                     {release.date}
                   </span>
                 </div>
-                <div style={{ color: C.text, fontSize: 12, lineHeight: 1.5, marginBottom: 10 }}>
+                <div style={{ color: C.text, fontSize: 12, lineHeight: 1.6, marginBottom: 12 }}>
                   {release.summary}
                 </div>
 
@@ -2091,7 +2091,7 @@ transport = "stdio"`}
                     {release[section.key].map((item, i) => (
                       <div key={i} style={{ display: "flex", gap: 8, marginBottom: 3, fontSize: 12, lineHeight: 1.5 }}>
                         <span style={{ color: C.muted, flexShrink: 0, fontFamily: mono }}>{section.symbol}</span>
-                        <span style={{ color: C.text }}>{item}</span>
+                        <span style={{ color: C.muted }}>{item}</span>
                       </div>
                     ))}
                   </div>
