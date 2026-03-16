@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from rag.types import FileType
+from rag.types import ChunkingStrategy, FileType
 
 
 class FoldersConfig(BaseModel):
@@ -47,6 +47,12 @@ class EmbeddingConfig(BaseModel):
     def expand_paths(self) -> EmbeddingConfig:
         object.__setattr__(self, "cache_dir", Path(self.cache_dir).expanduser().resolve())
         return self
+
+
+class ChunkingConfig(BaseModel):
+    strategy: ChunkingStrategy = "fixed"
+    similarity_threshold: float = Field(default=0.35, ge=0.0, le=1.0)
+    max_chunk_tokens: int = Field(default=768, ge=128, le=2048)
 
 
 class RerankerConfig(BaseModel):
@@ -117,6 +123,7 @@ class AppConfig(BaseModel):
     database: DatabaseConfig = DatabaseConfig()
     qdrant: QdrantConfig = QdrantConfig()
     embedding: EmbeddingConfig = EmbeddingConfig()
+    chunking: ChunkingConfig = ChunkingConfig()
     reranker: RerankerConfig = RerankerConfig()
     summarization: SummarizationConfig = SummarizationConfig()
     retrieval: RetrievalConfig = RetrievalConfig()

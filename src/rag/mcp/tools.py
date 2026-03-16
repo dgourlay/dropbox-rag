@@ -514,6 +514,7 @@ async def _handle_sync_status(
         pending_count=pending_count,
         error_count=error_count,
         last_sync_time=last_sync_time,
+        chunking_strategy=components._config.chunking.strategy,
         folders=folders,
     )
     return [types.TextContent(type="text", text=output.model_dump_json())]

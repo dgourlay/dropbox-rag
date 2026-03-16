@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from rag.pipeline.chunker import chunk_document
+from rag.pipeline.chunker import chunk_document, get_chunker_version
 from rag.pipeline.classifier import classify
 from rag.pipeline.normalizer import normalize
 from rag.pipeline.parser.base import get_parser
@@ -274,6 +274,7 @@ class PipelineRunner:
                     ocr_required=1 if parsed_doc.ocr_required else 0,
                     ocr_confidence=parsed_doc.ocr_confidence,
                     embedding_model_version=self._embedder.model_version,
+                    chunker_version=get_chunker_version(self._config.chunking.strategy),
                 )
             )
 
@@ -292,7 +293,7 @@ class PipelineRunner:
             self._db.insert_sections(section_rows)
 
             # 8. Chunk
-            chunks = chunk_document(normalized)
+            chunks = chunk_document(normalized, self._config.chunking, self._embedder)
 
             # 9. Save chunks to DB
             chunk_rows = [
@@ -449,7 +450,7 @@ class PipelineRunner:
         normalized = normalize(parsed_doc)
 
         # 4. Chunk
-        chunks = chunk_document(normalized)
+        chunks = chunk_document(normalized, self._config.chunking, self._embedder)
 
         return _ParsedFileResult(
             event=event,
@@ -811,6 +812,7 @@ class PipelineRunner:
                 ocr_required=1 if parsed_doc.ocr_required else 0,
                 ocr_confidence=parsed_doc.ocr_confidence,
                 embedding_model_version=self._embedder.model_version,
+                chunker_version=get_chunker_version(self._config.chunking.strategy),
             )
         )
 

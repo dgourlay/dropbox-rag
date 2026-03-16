@@ -476,7 +476,11 @@ def _run_index(config: AppConfig, events: list[FileEvent]) -> None:
     if not events:
         return
 
-    click.echo("Loading models and connecting to Qdrant...", nl=False)
+    strategy_label = ""
+    if config.chunking.strategy == "semantic":
+        strategy_label = " (semantic chunking)"
+
+    click.echo(f"Loading models and connecting to Qdrant{strategy_label}...", nl=False)
     _db, runner, _engine = _init_components(config)
     click.echo(" done.")
 
@@ -795,6 +799,17 @@ def doctor() -> None:
         click.echo("Models:    PASS (cache populated)")
     else:
         click.echo("Models:    WARN (model cache empty, first run will download)")
+
+    # Semantic chunking dependency check
+    if config.chunking.strategy == "semantic":
+        try:
+            import spacy
+
+            nlp = spacy.blank("en")
+            nlp.add_pipe("sentencizer")
+            click.echo("Spacy:     PASS (sentencizer available)")
+        except Exception as e:
+            click.echo(f"Spacy:     FAIL ({e})")
 
 
 @main.command()

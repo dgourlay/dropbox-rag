@@ -44,6 +44,7 @@ def _make_config() -> MagicMock:
     config.mcp.transport = "stdio"
     config.mcp.host = "127.0.0.1"
     config.mcp.port = 8080
+    config.chunking.strategy = "fixed"
     return config
 
 

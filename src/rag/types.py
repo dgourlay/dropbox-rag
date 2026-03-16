@@ -14,6 +14,7 @@ NAMESPACE_RAG = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 ProcessStatus = Literal["pending", "processing", "done", "error", "poison"]
 SummaryLevel = Literal["8w", "16w", "32w", "64w", "128w"]
 DetailLevel = Literal["8w", "16w", "32w", "64w", "128w"]
+ChunkingStrategy = Literal["fixed", "semantic"]
 
 
 class RecordType(StrEnum):
@@ -365,6 +366,7 @@ class SyncStatusOutput(BaseModel):
     pending_count: int
     error_count: int
     last_sync_time: str | None = None
+    chunking_strategy: str | None = None
     folders: list[FolderStatusEntry]
 
 

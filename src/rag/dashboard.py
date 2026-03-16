@@ -372,12 +372,19 @@ def render_dashboard(conn: sqlite3.Connection, config: AppConfig) -> None:
     # Clear the "Running liveness checks..." line
     console.print("\r" + " " * 40 + "\r", end="")
 
+    # Chunking strategy display
+    if config.chunking.strategy == "semantic":
+        chunking_label = f"semantic (threshold={config.chunking.similarity_threshold})"
+    else:
+        chunking_label = f"fixed ({512} tokens, {64} overlap)"
+
     # System health panel
     health_lines = [
         "[bold]System Health[/]",
         "",
         f"  Qdrant:      {qdrant_status}  ({qdrant_points} vectors)",
         f"  Database:    [green]ok[/]  ({_sizeof_fmt(db_size)})",
+        f"  Chunking:    {chunking_label}",
         f"  RAG Search:  {rag_status}",
         f"  MCP Server:  {mcp_status}",
         f"  MCP Config:  {mcp_config_str}",

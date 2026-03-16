@@ -2,14 +2,23 @@ from __future__ import annotations
 
 import re
 import uuid
+from typing import TYPE_CHECKING
 
 import tiktoken
 
 from rag.types import NAMESPACE_RAG, Chunk, NormalizedDocument, ParsedSection
 
+if TYPE_CHECKING:
+    from rag.config import ChunkingConfig
+    from rag.protocols import Embedder
+
 # Target tokens per chunk and overlap
 TARGET_TOKENS = 512
 OVERLAP_TOKENS = 64
+
+# Chunker version constants
+CHUNKER_VERSION_FIXED = "fixed-v1"
+CHUNKER_VERSION_SEMANTIC = "semantic-v1"
 
 # Module-level tokenizer (loaded once)
 _encoding = tiktoken.get_encoding("cl100k_base")
@@ -20,14 +29,43 @@ def count_tokens(text: str) -> int:
     return len(_encoding.encode(text))
 
 
+def get_chunker_version(strategy: str) -> str:
+    """Return the chunker version string for the given strategy."""
+    if strategy == "semantic":
+        return CHUNKER_VERSION_SEMANTIC
+    return CHUNKER_VERSION_FIXED
+
+
 def _split_sentences(text: str) -> list[str]:
     """Split text into sentences at sentence boundaries."""
     parts = re.split(r"(?<=[.!?])\s+", text)
     return [p for p in parts if p.strip()]
 
 
-def chunk_document(doc: NormalizedDocument) -> list[Chunk]:
-    """Chunk a normalized document into sized chunks with deterministic IDs.
+def chunk_document(
+    doc: NormalizedDocument,
+    config: ChunkingConfig | None = None,
+    embedder: Embedder | None = None,
+) -> list[Chunk]:
+    """Chunk a document using the configured strategy.
+
+    Args:
+        doc: Normalized document with sections.
+        config: Chunking configuration. Defaults to fixed strategy.
+        embedder: Required for semantic strategy. Ignored for fixed.
+    """
+    if config is not None and config.strategy == "semantic":
+        if embedder is None:
+            msg = "Embedder required for semantic chunking strategy"
+            raise ValueError(msg)
+        from rag.pipeline.chunker_semantic import chunk_document_semantic
+
+        return chunk_document_semantic(doc, config, embedder)
+    return chunk_document_fixed(doc)
+
+
+def chunk_document_fixed(doc: NormalizedDocument) -> list[Chunk]:
+    """Chunk a normalized document using fixed-size strategy.
 
     Each section starts a new chunk boundary. Chunks respect sentence
     boundaries and use 64-token overlap between adjacent chunks within
