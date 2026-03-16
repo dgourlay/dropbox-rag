@@ -2,7 +2,7 @@
 
 ## 1. Document Purpose
 
-This spec adds index-time question generation for chunks. At indexing time, an LLM generates 3-5 questions each chunk could answer. These questions are prepended to chunk text before embedding and stored as a keyword-indexed Qdrant payload field. This transforms chunk retrieval from question-to-passage matching into question-to-question matching, improving both dense and keyword search accuracy.
+This spec adds index-time question generation for chunks. At indexing time, an LLM generates 3 questions each chunk could answer. These questions are prepended to chunk text before embedding and stored as a keyword-indexed Qdrant payload field. This transforms chunk retrieval from question-to-passage matching into question-to-question matching, improving both dense and keyword search accuracy.
 
 This is complementary to HyDE (which works at query time for unpredictable queries). Auto-generated questions work at index time and improve retrieval for the common case where users ask questions that align with content the chunks actually contain.
 
@@ -15,7 +15,7 @@ Academic lineage: doc2query (Nogueira 2019), docTTTTTquery (T5), Doc2Query-- (fi
 | Decision | Resolution | Rationale |
 |---|---|---|
 | When to generate | **Index time**, after chunking, before embedding | Questions must exist before embedding so they are included in the vector. Zero query-time cost. |
-| Questions per chunk | **3-5** (configurable, default 3) | Optimal for 512-token chunks per research. Diminishing returns beyond 5. |
+| Questions per chunk | **3** (hardcoded) | Optimal for 512-token chunks per research. Diminishing returns beyond 5. No reason to expose as a config knob — the prompt is tuned for 3. |
 | Storage strategy | **Prepend to chunk text before embedding** + **separate payload field** | Enriches the dense vector (QuOTE approach) AND adds query-like terms to keyword index. No index size multiplication. |
 | LLM call granularity | **Batch multiple chunks per LLM call** | Same pattern as `BATCH_SECTION_PROMPT_TEMPLATE`. Group chunks under 80K char limit per call. |
 | Pipeline position | **New step between chunking and embedding** | Must run before `embed_batch()` so augmented text is embedded. Separate from summarization (different granularity: chunks vs documents/sections). |
@@ -58,7 +58,7 @@ Generate questions that each text chunk would be a good answer to. Return a JSON
 
 Each chunk object must have:
 - "chunk_order": The chunk number (as given below)
-- "questions": A list of {questions_per_chunk} questions this chunk answers
+- "questions": A list of 3 questions this chunk answers
 
 Requirements for questions:
 - Questions should resemble authentic user search queries
@@ -78,15 +78,15 @@ Chunks:
 
 ### Chunk Text Formatting
 
-Reuse the same pattern as `_format_sections_text()`:
+Reuse the same pattern as `_format_sections_text()`, but accept `list[Chunk]` directly instead of constructing tuples at the call site:
 
 ```python
-def _format_chunks_text(chunks: list[tuple[int, str]]) -> str:
-    """Format (chunk_order, text) pairs into numbered text for prompts."""
+def _format_chunks_text(chunks: list[Chunk]) -> str:
+    """Format chunks into numbered text for the question generation prompt."""
     parts: list[str] = []
-    for chunk_order, text in chunks:
-        excerpt = text[:MAX_EXCERPT_CHARS]
-        parts.append(f"--- Chunk {chunk_order} ---\n{excerpt}")
+    for chunk in chunks:
+        excerpt = chunk.text[:MAX_EXCERPT_CHARS]
+        parts.append(f"--- Chunk {chunk.chunk_order} ---\n{excerpt}")
     return "\n\n".join(parts)
 ```
 
@@ -219,32 +219,7 @@ ALTER TABLE chunks ADD COLUMN generated_questions TEXT;
 | `QdrantPayloadModel` | `generated_questions` | `list[str] \| None = None` | Keyword-indexed in Qdrant |
 | `QdrantPayloadReadBack` | `generated_questions` | `list[str] \| None` | Read-back typing |
 
-### Result Types
-
-Add to `results.py`:
-
-```python
-class ChunkQuestionsSuccess(BaseModel):
-    status: Literal["success"] = "success"
-    chunks: list[ChunkQuestionEntry]
-
-
-class ChunkQuestionEntry(BaseModel):
-    chunk_order: int
-    questions: list[str]
-
-
-class ChunkQuestionsError(BaseModel):
-    status: Literal["error"] = "error"
-    error: str
-
-
-ChunkQuestionsResult = Annotated[
-    Annotated[ChunkQuestionsSuccess, Tag("success")]
-    | Annotated[ChunkQuestionsError, Tag("error")],
-    Discriminator("status"),
-]
-```
+No new result types in `results.py`. The `generate_chunk_questions()` method returns `list[Chunk]` directly — chunks with `generated_questions` populated on success, or `None` on failure. Parse errors and LLM failures are handled internally (logged, chunks returned with `generated_questions=None`). This matches how `summarize_combined()` handles failures internally without exposing result types to the caller.
 
 ---
 
@@ -259,7 +234,6 @@ def generate_chunk_questions_batch(
     self,
     chunks: list[Chunk],
     title: str | None,
-    questions_per_chunk: int,
 ) -> list[Chunk]:
     """Generate questions for chunks in batched LLM calls.
 
@@ -294,24 +268,15 @@ class CliSummarizer:
         self,
         chunks: list[Chunk],
         title: str | None,
-        questions_per_chunk: int = 3,
     ) -> list[Chunk]:
-        """Generate questions for chunks via batched LLM calls."""
+        """Generate 3 questions per chunk via batched LLM calls."""
 ```
 
 ### Why Not a Separate Protocol
 
 Question generation is tightly coupled to the summarizer infrastructure (same CLI tool, same JSON parsing, same retry logic). Adding it as a method on `CliSummarizer` is simpler than creating a new `QuestionGenerator` protocol. If a different backend is needed in the future, it can be extracted then.
 
-However, add the method signature to the `Summarizer` protocol so mypy verifies it:
-
-```python
-class Summarizer(Protocol):
-    # ... existing methods ...
-    def generate_chunk_questions(
-        self, chunks: list[Chunk], title: str | None, questions_per_chunk: int = 3,
-    ) -> list[Chunk]: ...
-```
+Do **not** add `generate_chunk_questions` to the `Summarizer` Protocol. The Protocol defines the summarization contract. Question generation is a separate concern that happens to reuse the same CLI infrastructure. Adding it to the Protocol would force every `Summarizer` implementation to implement question generation, creating unnecessary coupling.
 
 ---
 
@@ -327,9 +292,9 @@ chunks = chunk_document(normalized)
 
 # 8.5 Generate questions (if enabled)
 if (self._summarizer and self._summarizer.available
-        and self._config.chunk_questions.enabled):
+        and self._config.questions.enabled):
     chunks = self._summarizer.generate_chunk_questions(
-        chunks, title, self._config.chunk_questions.questions_per_chunk,
+        chunks, title,
     )
 
 # 9. Save chunks to DB
@@ -344,19 +309,38 @@ vectors = self._embedder.embed_batch(texts) if texts else []
 
 ### Batch Path (`process_batch`)
 
-In `_parser_thread()`, chunking happens in the parser thread. Question generation requires LLM calls (I/O bound, not CPU bound), so it runs in the consumer (main thread) alongside embedding:
+In `_parser_thread()`, chunking happens in the parser thread. Question generation requires LLM calls (I/O bound, not CPU bound), so it runs in the consumer (main thread).
+
+**Critical ordering:** In the batch path, `_flush_pending()` collects `c.text` from all pending documents and calls `embed_batch()` in one cross-document batch. Questions must be generated *before* the document is appended to `pending`, because `_flush_pending()` needs to use augmented text for embedding.
 
 ```python
-# In _index_parsed_file():
-# Generate questions before embedding
+# In the consumer loop, after receiving a _ParsedFileResult:
 if (self._summarizer and self._summarizer.available
-        and self._config.chunk_questions.enabled):
+        and self._config.questions.enabled):
     pr.chunks = self._summarizer.generate_chunk_questions(
-        pr.chunks, pr.title, self._config.chunk_questions.questions_per_chunk,
+        pr.chunks, pr.title,
     )
+
+# Then append to pending (with questions already populated)
+pending.append(pr)
 ```
 
-Questions must be generated before the cross-document `embed_batch()` call in `_flush_pending()`, which means they must be generated per-document in `_index_parsed_file()` before chunks are accumulated for batch embedding. This is the natural place: per-document question generation, then cross-document batch embedding.
+And in `_flush_pending()`, use augmented text for embedding:
+
+```python
+# Collect all chunk texts across pending documents (with augmented text)
+all_texts: list[str] = []
+for pr in pending:
+    start_idx = len(all_texts)
+    all_texts.extend(
+        build_augmented_text(c.text, c.generated_questions)
+        if c.generated_questions else c.text
+        for c in pr.chunks
+    )
+    boundaries.append((start_idx, len(all_texts)))
+```
+
+This ensures question-augmented text is what gets embedded, while `chunk.text` (original) is preserved for display and keyword search.
 
 ---
 
@@ -365,19 +349,18 @@ Questions must be generated before the cross-document `embed_batch()` call in `_
 ### TOML Config
 
 ```toml
-[chunk_questions]
+[questions]
 # Generate questions per chunk at index time (requires LLM CLI)
 enabled = true
-# Number of questions to generate per chunk
-questions_per_chunk = 3
 ```
+
+One knob. The number of questions per chunk (3) is hardcoded — the prompt is tuned for this value and there is no practical reason to change it.
 
 ### Pydantic Config Model
 
 ```python
-class ChunkQuestionsConfig(BaseModel):
+class QuestionsConfig(BaseModel):
     enabled: bool = True
-    questions_per_chunk: int = Field(default=3, ge=1, le=10)
 ```
 
 Add to `AppConfig`:
@@ -385,12 +368,12 @@ Add to `AppConfig`:
 ```python
 class AppConfig(BaseModel):
     # ... existing fields ...
-    chunk_questions: ChunkQuestionsConfig = ChunkQuestionsConfig()
+    questions: QuestionsConfig = QuestionsConfig()
 ```
 
 ### Dependency on Summarization
 
-Question generation requires the same LLM CLI tool as summarization. If `summarization.enabled = false` and the CLI tool is not available, question generation is silently skipped (same graceful degradation pattern). The `chunk_questions.enabled` flag is independent of `summarization.enabled` -- you could disable summaries but still generate questions, or vice versa.
+Question generation requires the same LLM CLI tool as summarization. If `summarization.enabled = false` and the CLI tool is not available, question generation is silently skipped (same graceful degradation pattern). The `questions.enabled` flag is independent of `summarization.enabled` — you could disable summaries but still generate questions, or vice versa.
 
 ---
 
@@ -441,13 +424,81 @@ Same pattern as summarization throughout:
 
 4. **Partial batch response** -- If the LLM returns questions for some chunks but not all (truncated JSON), assign questions to matched chunks, leave unmatched chunks with `generated_questions=None`.
 
-5. **Feature disabled** -- `chunk_questions.enabled = false`. No LLM calls, no augmented text. Chunks embedded with original text only. Retrieval works identically to current behavior.
+5. **Feature disabled** -- `questions.enabled = false`. No LLM calls, no augmented text. Chunks embedded with original text only. Retrieval works identically to current behavior.
 
 6. **Re-indexing existing documents** -- Documents indexed before this feature have no questions. They work fine. Running `rag index --reindex` regenerates everything including questions.
 
 ---
 
-## 14. Testing
+## 14. CLI Integration
+
+### 14.1 Progress Display
+
+During `rag index`, question generation is a visible phase (LLM calls, takes time). The progress display should show:
+
+```
+[4/7] Generating questions... 12/45 docs  [LLM batch 2/3]
+```
+
+This phase appears between chunking and embedding. When `questions.enabled = false`, this phase is skipped entirely.
+
+### 14.2 `rag status` Dashboard
+
+Display whether question generation is enabled and the count of chunks with questions:
+
+```
+Questions:    enabled (8,432 / 10,000 chunks have questions)
+```
+
+or:
+
+```
+Questions:    disabled
+```
+
+### 14.3 `rag doctor` Health Check
+
+When `questions.enabled = true`, verify the LLM CLI tool is available (same check as summarization). Report:
+
+- `✓ LLM CLI available for question generation` or `✗ LLM CLI not found (questions will be skipped)`
+
+No separate check needed — this is the same CLI tool as summarization.
+
+---
+
+## 15. Interaction with Local Tools (Claude Code, kiro-cli)
+
+Generated questions are invisible to MCP clients by design. They improve retrieval quality silently — the calling LLM gets better search results without knowing questions were generated.
+
+**What does NOT change:**
+- Tool names, parameters, and response schemas — identical.
+- `search_documents` results show original chunk text, not augmented text. The generated questions are not included in the evidence returned to the calling LLM.
+- `get_document_context` shows original chunk text.
+- `quick_search` and `list_recent_documents` — unaffected (they operate at document/summary level).
+
+**What changes:**
+- Search results are more relevant for question-style queries. The calling LLM will observe higher-quality matches without any change in how it uses the tools.
+- Keyword search matches a broader vocabulary (question terms supplement original text terms).
+
+**`get_sync_status` addition:**
+Include question generation status in the sync status response:
+
+```json
+{
+  "questions_enabled": true,
+  "chunks_with_questions": 8432,
+  ...
+}
+```
+
+This lets the calling LLM (and users running `rag status`) confirm the feature is active.
+
+**`format=json` consideration:**
+When `search_documents` returns results with `format=json`, include `generated_questions` in the chunk data. This is useful for debugging retrieval quality — users can see what questions were generated for a chunk. The `format=text` output (default, LLM-friendly) omits questions to keep the evidence clean.
+
+---
+
+## 16. Testing
 
 ### Unit Tests
 
@@ -463,7 +514,7 @@ Same pattern as summarization throughout:
 
 6. **`test_partial_json_response`** -- Truncated JSON with some chunks' questions. Verify matched chunks get questions, unmatched get `None`.
 
-7. **`test_config_disabled`** -- Verify no LLM calls when `chunk_questions.enabled = false`.
+7. **`test_config_disabled`** -- Verify no LLM calls when `questions.enabled = false`.
 
 ### E2E Tests
 
@@ -475,7 +526,7 @@ Same pattern as summarization throughout:
 
 ---
 
-## 15. Migration
+## 17. Migration
 
 Existing indexes work without changes. Documents indexed before this feature have `generated_questions=NULL` in SQLite and no `generated_questions` field in Qdrant payloads. Retrieval handles `None`/missing gracefully.
 
@@ -487,7 +538,7 @@ The Qdrant payload index on `generated_questions` is created on startup if it do
 
 ---
 
-## 16. Cost Analysis
+## 18. Cost Analysis
 
 ### LLM Calls
 
@@ -509,7 +560,7 @@ Each chunk's embedded text grows by ~45 words (3 questions x ~15 words). For a 5
 
 ---
 
-## 17. Future Considerations (Not in Scope)
+## 19. Future Considerations (Not in Scope)
 
 - **Doc2Query-- filtering**: Compute similarity between generated questions and source chunk, discard low-similarity questions. 16% improvement over unfiltered. Could be added later without schema changes.
 - **Question caching by content hash**: Skip question generation for unchanged chunks on re-index. Currently, `--reindex` regenerates everything. Content-hash-based caching could skip unchanged chunks.
