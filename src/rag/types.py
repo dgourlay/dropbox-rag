@@ -88,6 +88,7 @@ class Chunk(BaseModel):
     section_heading: str | None = None
     citation_label: str | None = None
     token_count: int
+    generated_questions: list[str] | None = None
 
 
 class EmbeddedChunk(BaseModel):
@@ -116,6 +117,7 @@ class QdrantPayloadModel(BaseModel):
     token_count: int | None = None
     citation_label: str | None = None
     key_topics: list[str] | None = None
+    generated_questions: list[str] | None = None
     text: str
 
 
@@ -186,6 +188,7 @@ class QdrantPayloadReadBack(TypedDict):
     folder_ancestors: list[str]
     file_type: str
     modified_at: str
+    generated_questions: list[str] | None
     text: str
 
 
@@ -279,6 +282,7 @@ class ChunkRow(BaseModel):
     section_heading: str | None = None
     citation_label: str | None = None
     token_count: int | None = None
+    generated_questions: str | None = None
     embedding_model_version: str | None = None
 
 
@@ -367,6 +371,8 @@ class SyncStatusOutput(BaseModel):
     error_count: int
     last_sync_time: str | None = None
     chunking_strategy: str | None = None
+    questions_enabled: bool = False
+    chunks_with_questions: int = 0
     folders: list[FolderStatusEntry]
 
 

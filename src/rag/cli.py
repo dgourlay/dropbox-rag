@@ -800,6 +800,21 @@ def doctor() -> None:
     else:
         click.echo("Models:    WARN (model cache empty, first run will download)")
 
+    # Question generation check
+    if config.questions.enabled:
+        import shutil
+
+        cmd = config.summarization.command
+        if shutil.which(cmd):
+            click.echo(f"Questions: PASS (LLM CLI '{cmd}' available)")
+        else:
+            click.echo(
+                f"Questions: WARN (LLM CLI '{cmd}' not found, "
+                "questions will be skipped)"
+            )
+    else:
+        click.echo("Questions: SKIP (disabled in config)")
+
     # Semantic chunking dependency check
     if config.chunking.strategy == "semantic":
         try:

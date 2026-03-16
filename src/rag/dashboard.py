@@ -378,6 +378,15 @@ def render_dashboard(conn: sqlite3.Connection, config: AppConfig) -> None:
     else:
         chunking_label = f"fixed ({512} tokens, {64} overlap)"
 
+    # Questions stats
+    if config.questions.enabled:
+        chunks_with_q: int = conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE generated_questions IS NOT NULL"
+        ).fetchone()[0]
+        questions_label = f"[green]enabled[/]  ({chunks_with_q:,} / {chunk_count:,} chunks)"
+    else:
+        questions_label = "[dim]disabled[/]"
+
     # System health panel
     health_lines = [
         "[bold]System Health[/]",
@@ -385,6 +394,7 @@ def render_dashboard(conn: sqlite3.Connection, config: AppConfig) -> None:
         f"  Qdrant:      {qdrant_status}  ({qdrant_points} vectors)",
         f"  Database:    [green]ok[/]  ({_sizeof_fmt(db_size)})",
         f"  Chunking:    {chunking_label}",
+        f"  Questions:   {questions_label}",
         f"  RAG Search:  {rag_status}",
         f"  MCP Server:  {mcp_status}",
         f"  MCP Config:  {mcp_config_str}",

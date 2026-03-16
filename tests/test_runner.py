@@ -44,6 +44,7 @@ def _create_db() -> sqlite3.Connection:
     migrations_dir = Path(__file__).parent.parent / "migrations"
     conn.executescript((migrations_dir / "001_initial.sql").read_text())
     conn.executescript((migrations_dir / "002_pyramid_summaries.sql").read_text())
+    conn.executescript((migrations_dir / "003_chunk_questions.sql").read_text())
     return conn
 
 

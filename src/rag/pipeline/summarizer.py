@@ -21,6 +21,7 @@ from rag.results import (
 if TYPE_CHECKING:
     from rag.config import SummarizationConfig
     from rag.results import CombinedSummaryResult, SectionSummaryResult, SummaryResult
+    from rag.types import Chunk
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,29 @@ Sections:
 {sections_text}
 """
 
+CHUNK_QUESTIONS_BATCH_PROMPT_TEMPLATE = """\
+Generate questions that each text chunk would be a good answer to. Return a JSON object with:
+- "chunks": An array of question objects (one per chunk, in the same order)
+
+Each chunk object must have:
+- "chunk_order": The chunk number (as given below)
+- "questions": A list of 3 questions this chunk answers
+
+Requirements for questions:
+- Questions should resemble authentic user search queries
+- Be explicit about entities and concepts — never use pronouns like "it", "this", "they"
+- Vary question length from short (3-5 words) to longer (10-15 words)
+- Cover different aspects of the chunk content
+- For code content, include "how to" questions with actual function/class/API names
+
+Return ONLY the JSON object, no other text.
+
+Document title: {title}
+
+Chunks:
+{chunks_text}
+"""
+
 BATCH_SECTION_PROMPT_TEMPLATE = """\
 Summarize the following sections from a document. Return a JSON object with a single field:
 - "sections": An array of section summary objects (one per section, in the same order)
@@ -145,6 +169,21 @@ def _format_sections_text(sections: list[tuple[str | None, str]]) -> str:
         excerpt = text[:MAX_EXCERPT_CHARS]
         parts.append(f"--- Section {i}: {heading or 'Untitled section'} ---\n{excerpt}")
     return "\n\n".join(parts)
+
+
+def _format_chunks_text(chunks: list[Chunk]) -> str:
+    """Format chunks into numbered text for the question generation prompt."""
+    parts: list[str] = []
+    for chunk in chunks:
+        excerpt = chunk.text[:MAX_EXCERPT_CHARS]
+        parts.append(f"--- Chunk {chunk.chunk_order} ---\n{excerpt}")
+    return "\n\n".join(parts)
+
+
+def build_augmented_text(original_text: str, questions: list[str]) -> str:
+    """Prepend generated questions to chunk text for embedding."""
+    q_block = "\n".join(f"- {q}" for q in questions)
+    return f"Questions this content answers:\n{q_block}\n\n{original_text}"
 
 
 def _close_json(fragment: str) -> str:
@@ -510,6 +549,90 @@ class CliSummarizer:
                 current_size = 0
             current_batch.append((heading, text))
             current_size += section_size
+
+        if current_batch:
+            batches.append(current_batch)
+
+        return batches
+
+    def generate_chunk_questions(
+        self,
+        chunks: list[Chunk],
+        title: str | None,
+    ) -> list[Chunk]:
+        """Generate 3 questions per chunk via batched LLM calls.
+
+        Groups chunks into batches that fit under _COMBINED_PROMPT_CHAR_LIMIT.
+        Returns chunks with generated_questions populated. Chunks whose batch
+        fails are returned with generated_questions=None (graceful degradation).
+        """
+        if not chunks:
+            return chunks
+
+        if not self.available:
+            logger.warning("Summarizer not available, skipping question generation")
+            return chunks
+
+        batches = self._group_chunks_into_batches(chunks)
+
+        # Build a lookup from chunk_order to chunk for assignment
+        chunk_by_order: dict[int, Chunk] = {c.chunk_order: c for c in chunks}
+
+        for batch in batches:
+            chunks_text = _format_chunks_text(batch)
+            prompt = CHUNK_QUESTIONS_BATCH_PROMPT_TEMPLATE.format(
+                title=title or "Untitled",
+                chunks_text=chunks_text,
+            )
+
+            stdout = self._run_cli(prompt)
+            if stdout is None:
+                logger.warning("Batch question generation CLI call failed")
+                continue
+
+            parsed = _extract_json(stdout)
+            if parsed is None:
+                logger.warning("Could not parse JSON from batch question output")
+                continue
+
+            raw_chunks = parsed.get("chunks")
+            if not isinstance(raw_chunks, list):
+                logger.warning("Batch question output missing 'chunks' array")
+                continue
+
+            for raw_chunk in raw_chunks:
+                if not isinstance(raw_chunk, dict):
+                    continue
+                order = raw_chunk.get("chunk_order")
+                questions = raw_chunk.get("questions")
+                if (
+                    isinstance(order, int)
+                    and isinstance(questions, list)
+                    and order in chunk_by_order
+                ):
+                    # Validate all questions are strings
+                    valid_questions = [q for q in questions if isinstance(q, str)]
+                    if valid_questions:
+                        chunk_by_order[order].generated_questions = valid_questions
+
+        return chunks
+
+    def _group_chunks_into_batches(
+        self, chunks: list[Chunk],
+    ) -> list[list[Chunk]]:
+        """Group chunks into batches that fit under the char limit."""
+        batches: list[list[Chunk]] = []
+        current_batch: list[Chunk] = []
+        current_size = 0
+
+        for chunk in chunks:
+            excerpt_size = len(chunk.text[:MAX_EXCERPT_CHARS]) + 50
+            if current_batch and current_size + excerpt_size > _COMBINED_PROMPT_CHAR_LIMIT:
+                batches.append(current_batch)
+                current_batch = []
+                current_size = 0
+            current_batch.append(chunk)
+            current_size += excerpt_size
 
         if current_batch:
             batches.append(current_batch)

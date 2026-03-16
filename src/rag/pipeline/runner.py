@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
@@ -16,6 +17,7 @@ from rag.pipeline.chunker import chunk_document, get_chunker_version
 from rag.pipeline.classifier import classify
 from rag.pipeline.normalizer import normalize
 from rag.pipeline.parser.base import get_parser
+from rag.pipeline.summarizer import build_augmented_text
 from rag.results import (
     CombinedSummarySuccess,
     ParseSuccess,
@@ -295,6 +297,19 @@ class PipelineRunner:
             # 8. Chunk
             chunks = chunk_document(normalized, self._config.chunking, self._embedder)
 
+            # 8.5. Generate questions (if enabled)
+            if (
+                self._summarizer is not None
+                and self._summarizer.available
+                and self._config.questions.enabled
+            ):
+                from rag.pipeline.summarizer import CliSummarizer
+
+                if isinstance(self._summarizer, CliSummarizer):
+                    chunks = self._summarizer.generate_chunk_questions(
+                        chunks, parsed_doc.title,
+                    )
+
             # 9. Save chunks to DB
             chunk_rows = [
                 ChunkRow(
@@ -309,14 +324,22 @@ class PipelineRunner:
                     section_heading=c.section_heading,
                     citation_label=c.citation_label,
                     token_count=c.token_count,
+                    generated_questions=(
+                        json.dumps(c.generated_questions)
+                        if c.generated_questions else None
+                    ),
                     embedding_model_version=self._embedder.model_version,
                 )
                 for c in chunks
             ]
             self._db.insert_chunks(chunk_rows)
 
-            # 10. Embed
-            texts = [c.text for c in chunks]
+            # 10. Embed (using augmented text when questions are available)
+            texts = [
+                build_augmented_text(c.text, c.generated_questions)
+                if c.generated_questions else c.text
+                for c in chunks
+            ]
             vectors = self._embedder.embed_batch(texts) if texts else []
 
             # 11. Build VectorPoints and upsert
@@ -343,6 +366,7 @@ class PipelineRunner:
                             chunk_order=chunk.chunk_order,
                             token_count=chunk.token_count,
                             citation_label=chunk.citation_label,
+                            generated_questions=chunk.generated_questions,
                             text=chunk.text,
                         ),
                     )
@@ -549,12 +573,16 @@ class PipelineRunner:
             if not pending:
                 return
 
-            # Collect all chunk texts across pending documents
+            # Collect all chunk texts across pending documents (augmented when questions available)
             all_texts: list[str] = []
             boundaries: list[tuple[int, int]] = []
             for pr in pending:
                 start_idx = len(all_texts)
-                all_texts.extend(c.text for c in pr.chunks)
+                all_texts.extend(
+                    build_augmented_text(c.text, c.generated_questions)
+                    if c.generated_questions else c.text
+                    for c in pr.chunks
+                )
                 boundaries.append((start_idx, len(all_texts)))
 
             # Single cross-document embed_batch call
@@ -641,6 +669,19 @@ class PipelineRunner:
                 if processed_count % 10 == 0:
                     self._dedup.flush()
                 continue
+
+            # Generate questions before batching (needs augmented text for embedding)
+            if (
+                self._summarizer is not None
+                and self._summarizer.available
+                and self._config.questions.enabled
+            ):
+                from rag.pipeline.summarizer import CliSummarizer
+
+                if isinstance(self._summarizer, CliSummarizer):
+                    pr.chunks = self._summarizer.generate_chunk_questions(
+                        pr.chunks, pr.parsed_doc.title,
+                    )
 
             # File needs indexing -- accumulate for cross-document batching
             pending.append(pr)
@@ -844,6 +885,7 @@ class PipelineRunner:
                 section_heading=c.section_heading,
                 citation_label=c.citation_label,
                 token_count=c.token_count,
+                generated_questions=json.dumps(c.generated_questions) if c.generated_questions else None,
                 embedding_model_version=self._embedder.model_version,
             )
             for c in pr.chunks
@@ -874,6 +916,7 @@ class PipelineRunner:
                         chunk_order=chunk.chunk_order,
                         token_count=chunk.token_count,
                         citation_label=chunk.citation_label,
+                        generated_questions=chunk.generated_questions,
                         text=chunk.text,
                     ),
                 )

@@ -139,6 +139,18 @@ class QdrantVectorStore:
             ),
         )
 
+        self._client.create_payload_index(
+            collection_name=self._collection,
+            field_name="generated_questions",
+            field_schema=models.TextIndexParams(
+                type=models.TextIndexType.TEXT,
+                tokenizer=models.TokenizerType.WORD,
+                min_token_len=2,
+                max_token_len=20,
+                lowercase=True,
+            ),
+        )
+
     def upsert_points(self, doc_id: str, points: list[VectorPoint]) -> None:
         """Upsert points with deterministic IDs (overwrite semantics)."""
         if not points:
@@ -216,21 +228,40 @@ class QdrantVectorStore:
             key="text",
             match=models.MatchText(text=query),
         )
+        questions_condition = models.FieldCondition(
+            key="generated_questions",
+            match=models.MatchText(text=query),
+        )
+
+        # Text matching uses should (OR) -- match either text or generated_questions
+        text_should: list[
+            models.FieldCondition
+            | models.IsEmptyCondition
+            | models.IsNullCondition
+            | models.HasIdCondition
+            | models.HasVectorCondition
+            | models.NestedCondition
+            | models.Filter
+        ] = [text_condition, questions_condition]
 
         base_filter = _build_filter(filters)
         if base_filter is not None and base_filter.must is not None:
-            must_conditions: list[
-                models.FieldCondition
-                | models.IsEmptyCondition
-                | models.IsNullCondition
-                | models.HasIdCondition
-                | models.NestedCondition
-                | models.Filter
-            ] = [*base_filter.must, text_condition]
+            combined_filter = models.Filter(
+                must=list(base_filter.must),
+                should=text_should,
+                min_should=models.MinShould(
+                    conditions=text_should,
+                    min_count=1,
+                ),
+            )
         else:
-            must_conditions = [text_condition]
-
-        combined_filter = models.Filter(must=must_conditions)
+            combined_filter = models.Filter(
+                should=text_should,
+                min_should=models.MinShould(
+                    conditions=text_should,
+                    min_count=1,
+                ),
+            )
 
         response = self._client.query_points(
             collection_name=self._collection,
@@ -288,6 +319,18 @@ class AsyncQdrantVectorStore:
                 type=models.TextIndexType.TEXT,
                 tokenizer=models.TokenizerType.WORD,
                 min_token_len=3,
+                max_token_len=20,
+                lowercase=True,
+            ),
+        )
+
+        await self._client.create_payload_index(
+            collection_name=self._collection,
+            field_name="generated_questions",
+            field_schema=models.TextIndexParams(
+                type=models.TextIndexType.TEXT,
+                tokenizer=models.TokenizerType.WORD,
+                min_token_len=2,
                 max_token_len=20,
                 lowercase=True,
             ),
@@ -372,21 +415,40 @@ class AsyncQdrantVectorStore:
             key="text",
             match=models.MatchText(text=query),
         )
+        questions_condition = models.FieldCondition(
+            key="generated_questions",
+            match=models.MatchText(text=query),
+        )
+
+        # Text matching uses should (OR) -- match either text or generated_questions
+        text_should: list[
+            models.FieldCondition
+            | models.IsEmptyCondition
+            | models.IsNullCondition
+            | models.HasIdCondition
+            | models.HasVectorCondition
+            | models.NestedCondition
+            | models.Filter
+        ] = [text_condition, questions_condition]
 
         base_filter = _build_filter(filters)
         if base_filter is not None and base_filter.must is not None:
-            must_conditions: list[
-                models.FieldCondition
-                | models.IsEmptyCondition
-                | models.IsNullCondition
-                | models.HasIdCondition
-                | models.NestedCondition
-                | models.Filter
-            ] = [*base_filter.must, text_condition]
+            combined_filter = models.Filter(
+                must=list(base_filter.must),
+                should=text_should,
+                min_should=models.MinShould(
+                    conditions=text_should,
+                    min_count=1,
+                ),
+            )
         else:
-            must_conditions = [text_condition]
-
-        combined_filter = models.Filter(must=must_conditions)
+            combined_filter = models.Filter(
+                should=text_should,
+                min_should=models.MinShould(
+                    conditions=text_should,
+                    min_count=1,
+                ),
+            )
 
         response = await self._client.query_points(
             collection_name=self._collection,

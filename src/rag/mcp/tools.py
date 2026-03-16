@@ -508,6 +508,13 @@ async def _handle_sync_status(
         for row in folder_rows
     ]
 
+    # Question generation stats
+    chunks_with_questions = await asyncio.to_thread(
+        lambda: conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE generated_questions IS NOT NULL"
+        ).fetchone()[0]
+    )
+
     output = SyncStatusOutput(
         total_files=total_files,
         indexed_count=indexed_count,
@@ -515,6 +522,8 @@ async def _handle_sync_status(
         error_count=error_count,
         last_sync_time=last_sync_time,
         chunking_strategy=components._config.chunking.strategy,
+        questions_enabled=components._config.questions.enabled,
+        chunks_with_questions=chunks_with_questions,
         folders=folders,
     )
     return [types.TextContent(type="text", text=output.model_dump_json())]

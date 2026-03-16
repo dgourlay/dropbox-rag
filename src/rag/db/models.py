@@ -191,8 +191,8 @@ class SqliteMetadataDB:
             (chunk_id, doc_id, section_id, chunk_order, chunk_text,
              chunk_text_normalized, page_start, page_end,
              section_heading, citation_label, token_count,
-             embedding_model_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             embedding_model_version, generated_questions)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
                     c.chunk_id,
@@ -207,6 +207,7 @@ class SqliteMetadataDB:
                     c.citation_label,
                     c.token_count,
                     c.embedding_model_version,
+                    c.generated_questions,
                 )
                 for c in chunks
             ],
@@ -402,4 +403,5 @@ def _row_to_chunk(row: sqlite3.Row) -> ChunkRow:
         citation_label=row["citation_label"],
         token_count=row["token_count"],
         embedding_model_version=row["embedding_model_version"],
+        generated_questions=row["generated_questions"],
     )

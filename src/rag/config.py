@@ -101,6 +101,10 @@ class SummarizationConfig(BaseModel):
         return self
 
 
+class QuestionsConfig(BaseModel):
+    enabled: bool = True
+
+
 class RetrievalConfig(BaseModel):
     hyde_enabled: bool = True
 
@@ -126,6 +130,7 @@ class AppConfig(BaseModel):
     chunking: ChunkingConfig = ChunkingConfig()
     reranker: RerankerConfig = RerankerConfig()
     summarization: SummarizationConfig = SummarizationConfig()
+    questions: QuestionsConfig = QuestionsConfig()
     retrieval: RetrievalConfig = RetrievalConfig()
     mcp: MCPConfig = MCPConfig()
     watcher: WatcherConfig = WatcherConfig()
