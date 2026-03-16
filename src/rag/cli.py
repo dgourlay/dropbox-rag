@@ -803,13 +803,15 @@ def doctor() -> None:
     # Semantic chunking dependency check
     if config.chunking.strategy == "semantic":
         try:
-            import spacy
+            from rag.pipeline.chunker_semantic import segment_sentences
 
-            nlp = spacy.blank("en")
-            nlp.add_pipe("sentencizer")
-            click.echo("Spacy:     PASS (sentencizer available)")
+            result = segment_sentences("Test sentence. Another one.")
+            if len(result) >= 2:
+                click.echo("Semantic:  PASS (sentencizer working)")
+            else:
+                click.echo("Semantic:  WARN (sentencizer returned unexpected results)")
         except Exception as e:
-            click.echo(f"Spacy:     FAIL ({e})")
+            click.echo(f"Semantic:  FAIL ({e})")
 
 
 @main.command()
