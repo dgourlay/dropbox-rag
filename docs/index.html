@@ -358,7 +358,7 @@ function Card({ comp, isSelected, onClick }) {
   );
 }
 
-function Detail({ comp }) {
+function Detail({ comp, mobile }) {
   if (!comp)
     return (
       <div
@@ -1052,7 +1052,7 @@ rag search "your query" # test it from the terminal`}
                 />
               ))}
             </div>
-            <Detail comp={sel ? components[sel] : null} />
+            <Detail comp={sel ? components[sel] : null} mobile={mobile} />
 
             {/* Quick stats */}
             <div
