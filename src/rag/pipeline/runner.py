@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-
+from concurrent.futures import Future
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -554,6 +554,20 @@ class PipelineRunner:
         pending: list[_ParsedFileResult] = []
         pending_chunk_count = 0
 
+        # -- Cross-file question generation parallelism --
+        # Files whose question generation is in-flight via the summarizer's pool.
+        in_flight_questions: list[tuple[_ParsedFileResult, Future[list[Chunk]]]] = []
+        _questions_enabled = (
+            self._summarizer is not None
+            and self._summarizer.available
+            and self._config.questions.enabled
+        )
+        from rag.pipeline.summarizer import CliSummarizer
+
+        _cli_summarizer: CliSummarizer | None = None
+        if _questions_enabled and isinstance(self._summarizer, CliSummarizer):
+            _cli_summarizer = self._summarizer
+
         def _report_progress(
             outcome: ProcessingOutcome, detail: str, file_path: str,
             file_index: int = 0,
@@ -566,6 +580,40 @@ class PipelineRunner:
                     file_index, total,
                     Path(file_path).name, outcome, detail,
                 )
+
+        def _collect_completed_questions() -> None:
+            """Move files with completed question generation into the pending buffer."""
+            nonlocal pending, pending_chunk_count
+            still_in_flight: list[tuple[_ParsedFileResult, Future[list[Chunk]]]] = []
+            for pr, future in in_flight_questions:
+                if future.done():
+                    try:
+                        pr.chunks = future.result()
+                    except Exception:
+                        logger.warning(
+                            "Question generation failed for %s, proceeding without",
+                            pr.event.file_path,
+                        )
+                    pending.append(pr)
+                    pending_chunk_count += len(pr.chunks)
+                else:
+                    still_in_flight.append((pr, future))
+            in_flight_questions[:] = still_in_flight
+
+        def _drain_all_questions() -> None:
+            """Wait for all in-flight question generation to complete."""
+            nonlocal pending, pending_chunk_count
+            for pr, future in in_flight_questions:
+                try:
+                    pr.chunks = future.result()
+                except Exception:
+                    logger.warning(
+                        "Question generation failed for %s, proceeding without",
+                        pr.event.file_path,
+                    )
+                pending.append(pr)
+                pending_chunk_count += len(pr.chunks)
+            in_flight_questions.clear()
 
         def _flush_pending() -> None:
             """Embed accumulated chunks across documents, then index each."""
@@ -620,10 +668,18 @@ class PipelineRunner:
 
         # -- Main consumer loop --
         while True:
+            # Collect any completed question-generation futures
+            _collect_completed_questions()
+
+            # Flush when accumulated chunks reach batch_size
+            if pending_chunk_count >= batch_size:
+                _flush_pending()
+
             item = q.get()
 
             # Sentinel: parser thread is done
             if item is None:
+                _drain_all_questions()
                 _flush_pending()
                 break
 
@@ -670,26 +726,17 @@ class PipelineRunner:
                     self._dedup.flush()
                 continue
 
-            # Generate questions before batching (needs augmented text for embedding)
-            if (
-                self._summarizer is not None
-                and self._summarizer.available
-                and self._config.questions.enabled
-            ):
-                from rag.pipeline.summarizer import CliSummarizer
-
-                if isinstance(self._summarizer, CliSummarizer):
-                    pr.chunks = self._summarizer.generate_chunk_questions(
-                        pr.chunks, pr.parsed_doc.title,
-                    )
-
-            # File needs indexing -- accumulate for cross-document batching
-            pending.append(pr)
-            pending_chunk_count += len(pr.chunks)
-
-            # Flush when accumulated chunks reach batch_size
-            if pending_chunk_count >= batch_size:
-                _flush_pending()
+            # Submit question generation to the summarizer's shared pool (non-blocking)
+            if _cli_summarizer is not None:
+                future = _cli_summarizer._pool.submit(
+                    _cli_summarizer.generate_chunk_questions,
+                    pr.chunks, pr.parsed_doc.title,
+                )
+                in_flight_questions.append((pr, future))
+            else:
+                # No question generation — add directly to pending
+                pending.append(pr)
+                pending_chunk_count += len(pr.chunks)
 
             # Flush dedup hashes periodically
             if processed_count % 10 == 0:
