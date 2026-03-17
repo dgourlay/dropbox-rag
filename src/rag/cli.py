@@ -603,7 +603,13 @@ def watch(daemon: bool) -> None:
             )
             if events:
                 click.echo(f"Startup re-scan found {len(events)} changes.")
-                counts = runner.process_batch(events)
+                display = _ProgressDisplay(len(events))
+                counts = runner.process_batch(
+                    events,
+                    progress=display.on_done,
+                    on_start=display.on_start,
+                    on_status=display.on_status,
+                )
                 click.echo(f"  {_format_counts(counts, len(events))}")
                 # Update known paths after re-scan
                 for ev in events:
@@ -676,7 +682,13 @@ def watch(daemon: bool) -> None:
                     except OSError:
                         continue
                 if events:
-                    counts = runner.process_batch(events)
+                    display = _ProgressDisplay(len(events))
+                    counts = runner.process_batch(
+                        events,
+                        progress=display.on_done,
+                        on_start=display.on_start,
+                        on_status=display.on_status,
+                    )
                     click.echo(f"  {_format_counts(counts, len(events))}")
                     # Update known paths
                     for ev in events:
