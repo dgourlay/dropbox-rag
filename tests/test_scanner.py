@@ -328,6 +328,32 @@ class TestRescanForChanges:
         assert events == []
         assert call_count == 1  # Called once for the file lookup
 
+    def test_interrupted_processing_reprocessed(self, tmp_path: Path) -> None:
+        """Files stuck in 'processing' status (e.g. Ctrl+C) are reprocessed."""
+        f = tmp_path / "interrupted.txt"
+        f.write_text("was processing")
+        content_hash = compute_file_hash(f)
+        stat = f.stat()
+        mtime = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+
+        # Same mtime + hash, but process_status is "processing"
+        state = _make_sync_state(str(f), content_hash, mtime)
+        state = state.model_copy(update={"process_status": "processing"})
+
+        config = FoldersConfig(
+            paths=[tmp_path],
+            extensions=[FileType.TXT],
+            ignore=[],
+        )
+        events = rescan_for_changes(
+            config,
+            get_sync_state=lambda _path: state,
+            get_all_tracked_paths=lambda: [str(f)],
+        )
+        assert len(events) == 1
+        assert events[0].event_type == "modified"
+        assert events[0].file_path == str(f)
+
     def test_mtime_changed_but_same_hash(self, tmp_path: Path) -> None:
         """If mtime changed but content hash is the same, no event emitted."""
         f = tmp_path / "touched.txt"

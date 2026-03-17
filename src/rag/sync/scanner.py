@@ -140,6 +140,18 @@ def rescan_for_changes(
                             modified_at=modified_at,
                         )
                     )
+                elif existing.process_status == "processing":
+                    # Interrupted mid-pipeline (e.g. Ctrl+C) — reprocess
+                    content_hash = compute_file_hash(file_path)
+                    events.append(
+                        FileEvent(
+                            file_path=path_str,
+                            content_hash=content_hash,
+                            file_type=ft,
+                            event_type="modified",
+                            modified_at=modified_at,
+                        )
+                    )
                 elif existing.modified_at != modified_at:
                     # Mtime changed — check hash
                     content_hash = compute_file_hash(file_path)
@@ -153,7 +165,7 @@ def rescan_for_changes(
                                 modified_at=modified_at,
                             )
                         )
-                # else: mtime same -> skip
+                # else: mtime same, status done/error -> skip
 
     # Detect deleted files
     for tracked_path in get_all_tracked_paths():
