@@ -647,6 +647,10 @@ class CliSummarizer:
 
     def _run_cli(self, prompt: str) -> str | None:
         """Run the LLM CLI with the given prompt. Returns cleaned stdout or None."""
+        # Strip null bytes — corrupt documents can contain them and subprocess.run
+        # raises ValueError("embedded null byte") if they reach the command args or stdin.
+        prompt = prompt.replace("\x00", "")
+
         input_mode = self._config.input_mode
 
         extra_args = self._config.args or []

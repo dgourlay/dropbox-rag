@@ -40,6 +40,8 @@ def normalize(doc: ParsedDocument) -> NormalizedDocument:
 
 def _normalize_text(text: str) -> str:
     """Clean whitespace while preserving structure."""
+    # Strip null bytes (corrupt documents can contain them)
+    text = text.replace("\x00", "")
     # Collapse multiple blank lines to max 2 newlines
     text = re.sub(r"\n{3,}", "\n\n", text)
     # Collapse multiple spaces to single space (but not newlines)
