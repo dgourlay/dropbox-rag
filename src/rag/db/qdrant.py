@@ -57,7 +57,7 @@ def _build_filter(
         conditions.append(
             models.FieldCondition(
                 key="modified_at",
-                range=models.Range(gte=date_val),
+                range=models.DatetimeRange(gte=date_val),
             )
         )
 
