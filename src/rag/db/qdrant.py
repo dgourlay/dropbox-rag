@@ -49,10 +49,15 @@ def _build_filter(
         )
 
     if filters.date_filter is not None:
+        # Normalize bare date ("2026-02-18") to full ISO 8601 datetime
+        # so Qdrant's datetime range filter matches correctly.
+        date_val = filters.date_filter
+        if len(date_val) == 10 and "T" not in date_val:
+            date_val = f"{date_val}T00:00:00+00:00"
         conditions.append(
             models.FieldCondition(
                 key="modified_at",
-                range=models.Range(gte=filters.date_filter),
+                range=models.Range(gte=date_val),
             )
         )
 
@@ -108,18 +113,21 @@ class QdrantVectorStore:
         self.ensure_collection()
 
     def ensure_collection(self) -> None:
-        """Create collection with 1024-dim cosine vectors and payload indices."""
-        if self._client.collection_exists(self._collection):
-            return
+        """Create collection with 1024-dim cosine vectors and payload indices.
 
-        self._client.create_collection(
-            collection_name=self._collection,
-            vectors_config=models.VectorParams(
-                size=_VECTOR_DIM,
-                distance=_COLLECTION_DISTANCE,
-            ),
-        )
+        Idempotent: creates the collection if missing, then ensures all payload
+        indexes exist (safe to call on existing collections to pick up new indexes).
+        """
+        if not self._client.collection_exists(self._collection):
+            self._client.create_collection(
+                collection_name=self._collection,
+                vectors_config=models.VectorParams(
+                    size=_VECTOR_DIM,
+                    distance=_COLLECTION_DISTANCE,
+                ),
+            )
 
+        # Qdrant's create_payload_index is idempotent — no-op if index exists.
         for field_name in _KEYWORD_INDEX_FIELDS:
             self._client.create_payload_index(
                 collection_name=self._collection,
@@ -149,6 +157,12 @@ class QdrantVectorStore:
                 max_token_len=20,
                 lowercase=True,
             ),
+        )
+
+        self._client.create_payload_index(
+            collection_name=self._collection,
+            field_name="modified_at",
+            field_schema=models.PayloadSchemaType.DATETIME,
         )
 
     def upsert_points(self, doc_id: str, points: list[VectorPoint]) -> None:
@@ -293,17 +307,19 @@ class AsyncQdrantVectorStore:
         return instance
 
     async def ensure_collection(self) -> None:
-        """Create collection with 1024-dim cosine vectors and payload indices."""
-        if await self._client.collection_exists(self._collection):
-            return
+        """Create collection with 1024-dim cosine vectors and payload indices.
 
-        await self._client.create_collection(
-            collection_name=self._collection,
-            vectors_config=models.VectorParams(
-                size=_VECTOR_DIM,
-                distance=_COLLECTION_DISTANCE,
-            ),
-        )
+        Idempotent: creates the collection if missing, then ensures all payload
+        indexes exist (safe to call on existing collections to pick up new indexes).
+        """
+        if not await self._client.collection_exists(self._collection):
+            await self._client.create_collection(
+                collection_name=self._collection,
+                vectors_config=models.VectorParams(
+                    size=_VECTOR_DIM,
+                    distance=_COLLECTION_DISTANCE,
+                ),
+            )
 
         for field_name in _KEYWORD_INDEX_FIELDS:
             await self._client.create_payload_index(
@@ -334,6 +350,12 @@ class AsyncQdrantVectorStore:
                 max_token_len=20,
                 lowercase=True,
             ),
+        )
+
+        await self._client.create_payload_index(
+            collection_name=self._collection,
+            field_name="modified_at",
+            field_schema=models.PayloadSchemaType.DATETIME,
         )
 
     async def upsert_points(self, doc_id: str, points: list[VectorPoint]) -> None:
