@@ -614,12 +614,12 @@ class CliSummarizer:
             )
             return self._run_cli(prompt)
 
-        # Submit all batches to the shared pool in parallel
-        futures = {self._pool.submit(_run_one_batch, batch): batch for batch in batches}
-
-        for future in as_completed(futures):
+        # Run batches sequentially on the calling thread.
+        # This method is already submitted to the shared pool by the runner,
+        # so submitting sub-tasks to the same pool would cause deadlock.
+        for batch in batches:
             try:
-                stdout = future.result()
+                stdout = _run_one_batch(batch)
             except Exception:
                 logger.warning("Batch question generation raised an exception", exc_info=True)
                 continue
