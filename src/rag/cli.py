@@ -401,11 +401,15 @@ def _handle_reindex(target: str, config: AppConfig, folder: str | None) -> None:
 class _ProgressDisplay:
     """Line-by-line progress display for indexing.
 
-    Prints one line per event (parsing started, file done) with aligned columns.
+    Prints one line per event (parsing started, stage change, file done) with
+    aligned columns.  A heartbeat thread reprints elapsed time every 30 seconds
+    for files that are still being processed so the display never appears stuck.
+
     No ANSI cursor tricks — safe when external libraries print to stdout/stderr.
     """
 
     _NAME_W = 55
+    _HEARTBEAT_INTERVAL = 30  # seconds between heartbeat prints
 
     _OUTCOME_LABELS: dict[str, tuple[str, str]] = {
         "INDEXED": ("indexed", "green"),
@@ -416,9 +420,19 @@ class _ProgressDisplay:
     }
 
     def __init__(self, total: int) -> None:
+        import threading
+
         self._total = total
         self._idx_w = len(str(total))
         self._start_times: dict[int, float] = {}
+        # Heartbeat state: tracks files currently in-progress
+        self._active: dict[int, tuple[str, str]] = {}   # file_idx -> (fitted_name, status)
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop, daemon=True,
+        )
+        self._heartbeat_thread.start()
 
     def _fit_name(self, name: str) -> str:
         """Truncate or pad name to exactly _NAME_W characters."""
@@ -438,15 +452,32 @@ class _ProgressDisplay:
             return f" [{minutes}m {seconds:.1f}s]"
         return f" [{elapsed:.1f}s]"
 
+    def _heartbeat_loop(self) -> None:
+        """Periodically reprint status for active files so output never looks stuck."""
+        while not self._stop_event.wait(self._HEARTBEAT_INTERVAL):
+            with self._lock:
+                snapshot = list(self._active.items())
+            for file_idx, (fitted_name, status) in snapshot:
+                elapsed = self._format_elapsed(file_idx)
+                if elapsed:
+                    idx = f"[{file_idx:>{self._idx_w}}/{self._total}]"
+                    click.echo(f"  {idx} {fitted_name}  still {status}{elapsed}")
+
     def on_start(self, file_idx: int, _total: int, name: str) -> None:
+        fitted = self._fit_name(name)
         self._start_times[file_idx] = time.monotonic()
+        with self._lock:
+            self._active[file_idx] = (fitted, "processing...")
         idx = f"[{file_idx:>{self._idx_w}}/{self._total}]"
-        click.echo(f"  {idx} {self._fit_name(name)}  processing...")
+        click.echo(f"  {idx} {fitted}  processing...")
 
     def on_status(self, file_idx: int, _total: int, name: str, status: str) -> None:
+        fitted = self._fit_name(name)
+        with self._lock:
+            self._active[file_idx] = (fitted, status)
         idx = f"[{file_idx:>{self._idx_w}}/{self._total}]"
         elapsed = self._format_elapsed(file_idx)
-        click.echo(f"  {idx} {self._fit_name(name)}  {status}{elapsed}")
+        click.echo(f"  {idx} {fitted}  {status}{elapsed}")
 
     def on_done(
         self,
@@ -456,6 +487,8 @@ class _ProgressDisplay:
         outcome: object,
         detail: str,
     ) -> None:
+        with self._lock:
+            self._active.pop(file_idx, None)
         label_name = outcome.name if hasattr(outcome, "name") else str(outcome)
         label_info = self._OUTCOME_LABELS.get(label_name, (label_name.lower(), "white"))
         styled = click.style(label_info[0], fg=label_info[1])
@@ -465,8 +498,9 @@ class _ProgressDisplay:
         self._start_times.pop(file_idx, None)
 
     def finalize(self) -> None:
-        """No-op — kept for interface compatibility."""
-        pass
+        """Stop the heartbeat thread."""
+        self._stop_event.set()
+        self._heartbeat_thread.join(timeout=2)
 
 
 def _run_index(config: AppConfig, events: list[FileEvent]) -> None:

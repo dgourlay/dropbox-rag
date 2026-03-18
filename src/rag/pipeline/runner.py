@@ -526,6 +526,7 @@ class PipelineRunner:
         def _parser_worker() -> None:
             """Parser thread: classify -> parse -> normalize -> chunk."""
             for file_idx, event in eligible:
+                name = Path(event.file_path).name
                 try:
                     # Handle deletions immediately as skip results
                     if event.event_type == "deleted":
@@ -534,6 +535,12 @@ class PipelineRunner:
                             error_msg="__deleted__",
                         ))
                         continue
+
+                    # Signal start before parsing begins (so display shows progress)
+                    if on_start:
+                        on_start(file_idx, total, name)
+                    if on_status:
+                        on_status(file_idx, total, name, "parsing...")
 
                     item = self._parse_stage(event, file_index=file_idx)
                     q.put(item)
@@ -633,6 +640,11 @@ class PipelineRunner:
                 )
                 boundaries.append((start_idx, len(all_texts)))
 
+            # Report embedding status for each file in the batch
+            if on_status:
+                for pr in pending:
+                    on_status(pr.file_index, total, Path(pr.event.file_path).name, "embedding...")
+
             # Single cross-document embed_batch call
             all_vectors = self._embedder.embed_batch(all_texts) if all_texts else []
 
@@ -705,7 +717,9 @@ class PipelineRunner:
 
             # Parse error or deletion -- handle on main thread
             if isinstance(item, _ParseErrorResult):
-                if on_start:
+                # on_start was already called by parser thread for parse errors;
+                # deletions skip parsing so we call on_start here.
+                if item.error_msg == "__deleted__" and on_start:
                     on_start(item.file_index, total, Path(item.event.file_path).name)
                 if item.error_msg == "__deleted__":
                     self._handle_deletion(item.event)
@@ -737,9 +751,7 @@ class PipelineRunner:
             pr = item
             dedup_result = self._run_dedup_check(pr)
             if dedup_result is not None:
-                # Report start + immediate completion for duplicates/skips
-                if on_start:
-                    on_start(pr.file_index, total, Path(pr.event.file_path).name)
+                # on_start already called by parser thread
                 outcome, detail = dedup_result
                 _report_progress(outcome, detail, pr.event.file_path, pr.file_index)
                 # Flush dedup hashes periodically
@@ -750,12 +762,13 @@ class PipelineRunner:
             # Back-pressure: wait if too many files are in-flight for question generation
             _wait_for_in_flight_room()
 
-            # Report start only for files that will actually be processed
-            if on_start:
-                on_start(pr.file_index, total, Path(pr.event.file_path).name)
+            # on_start already called by parser thread
 
             # Submit question generation to the summarizer's shared pool (non-blocking)
             if _cli_summarizer is not None:
+                if on_status:
+                    name = Path(pr.event.file_path).name
+                    on_status(pr.file_index, total, name, "questions...")
                 future = _cli_summarizer._pool.submit(
                     _cli_summarizer.generate_chunk_questions,
                     pr.chunks, pr.parsed_doc.title,

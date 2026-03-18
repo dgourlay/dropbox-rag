@@ -17,7 +17,22 @@ ParseError.model_rebuild()
 
 logger = logging.getLogger(__name__)
 
-_PARSE_TIMEOUT_SECONDS = 360
+_PARSE_TIMEOUT_BASE = 60       # minimum seconds for any file
+_PARSE_TIMEOUT_PER_MB = 30     # additional seconds per megabyte
+_PARSE_TIMEOUT_CAP = 600       # hard upper limit
+
+
+def _compute_parse_timeout(file_path: str) -> int:
+    """Compute parse timeout based on file size.
+
+    Base 60s + 30s per MB, clamped to [60, 600].
+    """
+    try:
+        size_mb = Path(file_path).stat().st_size / (1024 * 1024)
+    except OSError:
+        return _PARSE_TIMEOUT_BASE
+    computed = int(_PARSE_TIMEOUT_BASE + size_mb * _PARSE_TIMEOUT_PER_MB)
+    return min(max(_PARSE_TIMEOUT_BASE, computed), _PARSE_TIMEOUT_CAP)
 
 
 def _worker_loop(
@@ -239,15 +254,16 @@ class DoclingParser:
             pipe = self._ensure_worker()
             pipe.send((file_path, ocr_enabled))
 
-            # Wait for response with timeout
-            if not pipe.poll(timeout=_PARSE_TIMEOUT_SECONDS):
+            # Wait for response with file-size-based timeout
+            timeout = _compute_parse_timeout(file_path)
+            if not pipe.poll(timeout=timeout):
                 logger.error(
                     "Docling worker timed out after %ds for %s",
-                    _PARSE_TIMEOUT_SECONDS, file_path,
+                    timeout, file_path,
                 )
                 self._shutdown_worker()
                 return ParseError(
-                    error=f"Parsing timed out after {_PARSE_TIMEOUT_SECONDS} seconds",
+                    error=f"Parsing timed out after {timeout} seconds",
                     file_path=file_path,
                 )
 
